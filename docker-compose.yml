@@ -1,0 +1,64 @@
+services:
+  # 1. Raw Llama Engine (Port 8080 - For baseline raw comparison)
+  llama:
+    image: "${LLAMA_IMAGE:?Set LLAMA_IMAGE in .env}"
+    container_name: llama_server
+    gpus: all
+    volumes:
+      - ./models:/models:ro
+    command: 
+      - -m
+      - "/models/${MODEL_FILE:?Set MODEL_FILE in .env}"
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --ctx-size
+      - "${LLM_CONTEXT_SIZE:?Set LLM_CONTEXT_SIZE in .env}"
+      - --n-predict
+      - "${LLM_MAX_OUTPUT_TOKENS:?Set LLM_MAX_OUTPUT_TOKENS in .env}"
+      - --flash-attn
+      - "on"
+      - --metrics
+    environment:
+      - LLM_BASE_URL=http://llama_server:8080/v1/chat/completions
+      - LLM_CONTEXT_SIZE=13312
+      - LLM_MAX_OUTPUT_TOKENS=1024
+      - LLM_CONTEXT_SAFETY_MARGIN=512
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks:
+      - llm-internal
+    restart: unless-stopped
+
+  # 2. Python Orchestrator & Lightweight UI (Port 5000)
+  analyst:
+    build:
+      context: . 
+      dockerfile: Dockerfile
+    container_name: analyst
+    ports:
+      - "127.0.0.1:5000:5000"
+    environment:
+      LLM_BASE_URL: "http://llama_server:8080/v1/chat/completions"
+      MODEL_NAME: "${MODEL_NAME:?Set MODEL_NAME in .env}"
+      LLM_CONTEXT_SIZE: "${LLM_CONTEXT_SIZE:?Set LLM_CONTEXT_SIZE in .env}"
+      LLM_MAX_OUTPUT_TOKENS: "${LLM_MAX_OUTPUT_TOKENS:?Set LLM_MAX_OUTPUT_TOKENS in .env}"
+      LLM_CONTEXT_SAFETY_MARGIN: "${LLM_CONTEXT_SAFETY_MARGIN:?Set LLM_CONTEXT_SAFETY_MARGIN in .env}"
+      SKILLS_DIR: "${SKILLS_DIR:?Set SKILLS_DIR}"
+      MINILM_MODEL_PATH: "${MINILM_MODEL_PATH}"
+      ROUTER_TOP_K: "${ROUTER_TOP_K}"
+      ROUTER_SEMANTIC_WEIGHT: "${ROUTER_SEMANTIC_WEIGHT}"
+      ROUTER_NAME_BOOST: "${ROUTER_NAME_BOOST}"
+      LLM_TIMEOUT_SECONDS: "${LLM_TIMEOUT_SECONDS}"
+      TOKEN_COUNT_TIMEOUT_SECONDS: "${TOKEN_COUNT_TIMEOUT_SECONDS}"
+      MAX_PENDING_REQUESTS: "${MAX_PENDING_REQUESTS}"
+      PENDING_REQUEST_TTL_SECONDS: "${PENDING_REQUEST_TTL_SECONDS}"
+    depends_on:
+      - llama
+    networks:
+      - llm-internal
+    restart: unless-stopped
+
+networks:
+  llm-internal:

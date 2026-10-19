@@ -1,0 +1,3 @@
+[submodule "analyst-skills"]
+	path = analyst/skills
+	url = https://github.com/mukul975/Anthropic-Cybersecurity-Skills.git

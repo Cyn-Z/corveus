@@ -1,0 +1,14 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+.aws/
+.vscode
+
+# Downloaded models
+models/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/

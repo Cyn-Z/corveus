@@ -1,0 +1,560 @@
+/* --------------------------------------------------
+   CYBER-LLM — Analyst Chat Interface
+   -------------------------------------------------- */
+
+:root {
+    color-scheme: dark;
+
+    --bg: #101319;
+    --panel: #171b23;
+    --surface: #1d222c;
+    --surface-hover: #252c38;
+
+    --border: #2b3340;
+    --border-focus: #438a70;
+
+    --text: #e4e9f0;
+    --text-muted: #8994a5;
+
+    --accent: #56d6a0;
+    --accent-hover: #72e6b4;
+
+    --user-bg: #202d42;
+    --user-border: #344c6c;
+
+    --error: #ff8585;
+    --warning: #f0bd62;
+
+    --radius: 12px;
+}
+
+
+/* --------------------------------------------------
+   Global
+   -------------------------------------------------- */
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    height: 100%;
+}
+
+body {
+    margin: 0;
+    min-height: 100vh;
+    min-height: 100dvh;
+
+    background: var(--bg);
+    color: var(--text);
+
+    font-family:
+        Inter,
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+button,
+textarea {
+    font: inherit;
+}
+
+button {
+    -webkit-tap-highlight-color: transparent;
+}
+
+::selection {
+    background: #315b4b;
+    color: #ffffff;
+}
+
+
+/* --------------------------------------------------
+   Main layout
+   -------------------------------------------------- */
+
+.terminal {
+    width: 100%;
+    max-width: 1100px;
+    height: 100vh;
+    height: 100dvh;
+
+    margin: 0 auto;
+    padding: 0 28px;
+
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+
+/* --------------------------------------------------
+   Header
+   -------------------------------------------------- */
+
+.terminal-header {
+    flex-shrink: 0;
+
+    display: flex;
+    align-items: center;
+    gap: 14px;
+
+    padding: 22px 0 18px;
+    border-bottom: 1px solid var(--border);
+}
+
+.terminal-header h1 {
+    margin: 0;
+
+    color: var(--text);
+    font-size: 17px;
+    font-weight: 650;
+    letter-spacing: 0.8px;
+}
+
+.terminal-subtitle {
+    color: var(--accent);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+}
+
+
+/* --------------------------------------------------
+   Model statistics
+   -------------------------------------------------- */
+
+#stats-panel {
+    flex-shrink: 0;
+
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px 26px;
+
+    margin: 18px 0;
+    padding: 12px 16px;
+
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.stats-title {
+    margin: 0;
+    padding: 0;
+
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+}
+
+.stat-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+
+    margin: 0;
+
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.stat-row span:last-child {
+    color: var(--text);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+#context-percent.context-warning {
+    color: var(--warning);
+}
+
+#context-percent.context-critical {
+    color: var(--error);
+}
+
+
+/* --------------------------------------------------
+   Chat conversation
+   -------------------------------------------------- */
+
+#chat-box {
+    flex: 1;
+    min-height: 0;
+
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 20px;
+
+    overflow-y: auto;
+    overscroll-behavior: contain;
+
+    padding: 24px 12px 28px;
+
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+}
+
+#chat-box::-webkit-scrollbar {
+    width: 6px;
+}
+
+#chat-box::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 10px;
+}
+
+.message {
+    max-width: 85%;
+    min-width: 0;
+
+    padding: 13px 17px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.75;
+
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+/* User messages sit on the right. */
+
+.message.user {
+    align-self: flex-end;
+
+    background: var(--user-bg);
+    border-color: var(--user-border);
+    border-bottom-right-radius: 4px;
+}
+
+/* Analyst responses sit on the left. */
+
+.message.assistant {
+    align-self: flex-start;
+
+    background: var(--panel);
+    border-bottom-left-radius: 4px;
+}
+
+/* Message labels */
+
+.message strong {
+    display: block;
+    margin-bottom: 5px;
+
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+}
+
+.message.user strong {
+    color: #8dbdff;
+}
+
+.message.assistant strong {
+    color: var(--accent);
+}
+
+/* Error messages */
+
+.message.error {
+    align-self: flex-start;
+
+    background: #291a1d;
+    border-color: #67353d;
+    color: #ffd1d1;
+}
+
+.message.error strong {
+    color: var(--error);
+}
+
+
+/* --------------------------------------------------
+   Prompt composer
+   -------------------------------------------------- */
+
+#input-container {
+    flex-shrink: 0;
+
+    display: flex;
+    align-items: flex-end;
+    gap: 12px;
+
+    padding: 16px 0 22px;
+    border-top: 1px solid var(--border);
+}
+
+#prompt-input {
+    flex: 1;
+    min-width: 0;
+    min-height: 54px;
+    max-height: 180px;
+
+    padding: 14px 16px;
+
+    background: var(--panel);
+    color: var(--text);
+
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    outline: none;
+
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 1.6;
+
+    resize: vertical;
+    transition:
+        border-color 160ms ease,
+        background 160ms ease;
+}
+
+#prompt-input::placeholder {
+    color: #707b8b;
+}
+
+#prompt-input:focus {
+    background: var(--surface);
+    border-color: var(--border-focus);
+}
+
+#prompt-input:focus-visible {
+    outline: 2px solid #56d6a044;
+    outline-offset: 2px;
+}
+
+
+/* --------------------------------------------------
+   Send button
+   -------------------------------------------------- */
+
+#send-button {
+    min-height: 48px;
+    padding: 0 23px;
+
+    background: var(--accent);
+    color: #102018;
+
+    border: 1px solid transparent;
+    border-radius: 10px;
+
+    font-size: 12px;
+    font-weight: 750;
+    letter-spacing: 0.8px;
+
+    cursor: pointer;
+    transition:
+        background 160ms ease,
+        transform 160ms ease,
+        opacity 160ms ease;
+}
+
+#send-button:hover:not(:disabled) {
+    background: var(--accent-hover);
+}
+
+#send-button:active:not(:disabled) {
+    transform: translateY(1px);
+}
+
+#send-button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+}
+
+#send-button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+
+/* --------------------------------------------------
+   Accessibility
+   -------------------------------------------------- */
+
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+
+/* --------------------------------------------------
+   Responsive layout
+   -------------------------------------------------- */
+
+@media (max-width: 640px) {
+    .terminal {
+    width: calc(100% - 32px);
+    max-width: 1100px;
+    height: calc(100vh - 32px);
+    height: calc(100dvh - 32px);
+
+    margin: 16px auto;
+    padding: 0 28px;
+
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+
+    box-shadow: 0 12px 40px rgb(0 0 0 / 18%);
+    }
+
+    #stats-panel {
+        gap: 10px 16px;
+        padding: 12px;
+        margin: 12px 0;
+    }
+
+    .stats-title {
+        width: 100%;
+    }
+
+    #chat-box {
+        gap: 14px;
+        padding: 16px 2px 22px;
+    }
+
+    .message {
+        max-width: 94%;
+        padding: 11px 13px;
+        font-size: 13px;
+    }
+
+    #input-container {
+        gap: 8px;
+        padding: 12px 0 16px;
+    }
+
+    #prompt-input {
+        min-height: 48px;
+        padding: 12px;
+        font-size: 16px;
+    }
+
+    #send-button {
+        min-height: 46px;
+        padding: 0 15px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        scroll-behavior: auto !important;
+        transition: none !important;
+    }
+}
+
+/* --------------------------------------------------
+   User-controlled skill selection
+   -------------------------------------------------- */
+
+.skill-selection {
+    width: 100%;
+    max-width: 760px;
+    align-self: flex-start;
+}
+
+.skill-selection p {
+    margin: 10px 0;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.skill-selection-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 16px;
+}
+
+.skill-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+}
+
+.skill-option:hover {
+    border-color: var(--border-focus);
+    background: var(--surface-hover);
+}
+
+.skill-option input {
+    margin-top: 5px;
+    accent-color: var(--accent);
+    flex-shrink: 0;
+}
+
+.skill-details {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+}
+
+.skill-name {
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.skill-metadata {
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+.skill-selection-form button {
+    align-self: flex-start;
+    min-height: 42px;
+    margin-top: 8px;
+    padding: 0 16px;
+    background: var(--accent);
+    color: #102018;
+    border: 0;
+    border-radius: 8px;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.skill-selection-form button:disabled {
+    opacity: 0.5;
+    cursor: wait;
+}
+
+.selection-error {
+    color: var(--error) !important;
+}

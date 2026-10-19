@@ -1,0 +1,76 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <meta
+        name="description"
+        content="Local cybersecurity LLM analyst terminal"
+    >
+
+    <title>CYBER-LLM | Analyst Terminal</title>
+
+    <link rel="stylesheet" href="/style.css">
+    <script src="/app.js" defer></script>
+</head>
+
+<body>
+    <main class="terminal">
+        <header class="terminal-header">
+            <h1>[ CYBER-LLM ]</h1>
+            <span class="terminal-subtitle">ANALYST TERMINAL</span>
+        </header>
+
+        <section
+            id="stats-panel"
+            aria-labelledby="stats-heading"
+        >
+            <h2 id="stats-heading" class="stats-title">
+                [ MODEL STATUS ]
+            </h2>
+
+            <div class="stat-row">
+                <span>Context Limit:</span>
+                <span id="context-size">--</span>
+            </div>
+
+            <div class="stat-row">
+                <span>Tokens Used:</span>
+                <span id="tokens-used">--</span>
+            </div>
+
+            <div class="stat-row">
+                <span>Context Used:</span>
+                <span id="context-percent">--</span>
+            </div>
+        </section>
+
+        <section
+            id="chat-box"
+            aria-label="Conversation"
+            aria-live="polite"
+            aria-relevant="additions"
+        ></section>
+
+        <form id="input-container">
+            <label for="prompt-input" class="visually-hidden">
+                Enter a prompt or paste a log snippet
+            </label>
+
+            <textarea
+                id="prompt-input"
+                name="prompt"
+                placeholder="Enter prompt or paste log snippet..."
+                rows="3"
+                required
+            ></textarea>
+
+            <button id="send-button" type="submit">
+                SEND
+            </button>
+        </form>
+    </main>
+</body>
+</html>
