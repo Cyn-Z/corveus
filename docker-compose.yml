@@ -21,10 +21,10 @@ services:
       - "on"
       - --metrics
     environment:
-      - LLM_BASE_URL=http://llama_server:8080/v1/chat/completions
-      - LLM_CONTEXT_SIZE=13312
-      - LLM_MAX_OUTPUT_TOKENS=1024
-      - LLM_CONTEXT_SAFETY_MARGIN=512
+    LLM_BASE_URL: "http://llama_server:8080/v1/chat/completions"
+    LLM_CONTEXT_SIZE: "${LLM_CONTEXT_SIZE:?Set LLM_CONTEXT_SIZE in .env}"
+    LLM_MAX_OUTPUT_TOKENS: "${LLM_MAX_OUTPUT_TOKENS:?Set LLM_MAX_OUTPUT_TOKENS in .env}"
+    LLM_CONTEXT_SAFETY_MARGIN: "${LLM_CONTEXT_SAFETY_MARGIN:?Set LLM_CONTEXT_SAFETY_MARGIN in .env}"
     ports:
       - "127.0.0.1:8080:8080"
     networks:
