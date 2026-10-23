@@ -3,8 +3,11 @@
 .env.*
 !.env.example
 .aws/
+.release-backups/
 .vscode
-
+.codex
+.release-backups/
+READMEE.md
 # Downloaded models
 models/
 
@@ -12,3 +15,12 @@ models/
 __pycache__/
 *.py[cod]
 .venv/
+
+#test files
+
+
+#documentation
+docs/
+
+#ui 
+/corveus

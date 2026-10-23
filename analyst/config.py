@@ -1,10 +1,20 @@
 import os
 import math
 from pathlib import Path
-from dataclasses import dataclass
-#This is where we define the configuration settings for the application, including required environment variables and their validation.
+from dataclasses import dataclass, field
+from memory_config import MemorySettings, load_memory_settings
+from router_policy import (
+    RouterPolicy,
+    load_router_policy,
+    RouterSelectionPolicy,
+    load_selection_policy,
+)
+from router_query_plan import QueryPlanSettings, load_query_plan_settings
 
-def required_env(name: str) -> str: 
+# This is where we define the configuration settings for the application, including required environment variables and their validation.
+
+
+def required_env(name: str) -> str:
     value = os.environ.get(name, "").strip()
 
     if not value:
@@ -21,6 +31,7 @@ def integer_env(name: str) -> int:
     except ValueError as exc:
         raise ValueError(f"{name} must be an integer; got {value!r}") from exc
 
+
 def float_env(name: str) -> float:
     value = required_env(name)
 
@@ -34,7 +45,8 @@ def float_env(name: str) -> float:
 
     return result
 
-@dataclass(frozen=True) # frozen prevents accidental mutation of settings
+
+@dataclass(frozen=True)  # frozen prevents accidental mutation of settings
 class Settings:
     llm_url: str
     model_name: str
@@ -50,6 +62,14 @@ class Settings:
     token_count_timeout_seconds: int
     max_pending_requests: int
     pending_request_ttl_seconds: int
+    memory: MemorySettings = field(default_factory=load_memory_settings)
+    router_policy: RouterPolicy = field(default_factory=load_router_policy)
+    router_selection: RouterSelectionPolicy = field(
+        default_factory=load_selection_policy
+    )
+    router_query_plan: QueryPlanSettings = field(
+        default_factory=load_query_plan_settings
+    )
 
     @property
     def router_lexical_weight(self) -> float:
@@ -57,11 +77,7 @@ class Settings:
 
     @property
     def input_token_budget(self) -> int:
-        return (
-            self.context_size
-            - self.max_output_tokens
-            - self.context_safety_margin
-        )
+        return self.context_size - self.max_output_tokens - self.context_safety_margin
 
     def __post_init__(self):
         if self.context_size <= 0:
@@ -105,8 +121,6 @@ class Settings:
         for name, value in positive_settings.items():
             if value <= 0:
                 raise ValueError(f"{name} must be positive")
-
-
 
 
 settings = Settings(

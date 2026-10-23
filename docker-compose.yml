@@ -1,12 +1,12 @@
+name: cyber-llm
 services:
-  # 1. Raw Llama Engine (Port 8080 - For baseline raw comparison)
   llama:
     image: "${LLAMA_IMAGE:?Set LLAMA_IMAGE in .env}"
     container_name: llama_server
     gpus: all
     volumes:
       - ./models:/models:ro
-    command: 
+    command:
       - -m
       - "/models/${MODEL_FILE:?Set MODEL_FILE in .env}"
       - --host
@@ -17,30 +17,26 @@ services:
       - "${LLM_CONTEXT_SIZE:?Set LLM_CONTEXT_SIZE in .env}"
       - --n-predict
       - "${LLM_MAX_OUTPUT_TOKENS:?Set LLM_MAX_OUTPUT_TOKENS in .env}"
+      - --parallel
+      - "1"
       - --flash-attn
       - "on"
       - --metrics
-    environment:
-    LLM_BASE_URL: "http://llama_server:8080/v1/chat/completions"
-    LLM_CONTEXT_SIZE: "${LLM_CONTEXT_SIZE:?Set LLM_CONTEXT_SIZE in .env}"
-    LLM_MAX_OUTPUT_TOKENS: "${LLM_MAX_OUTPUT_TOKENS:?Set LLM_MAX_OUTPUT_TOKENS in .env}"
-    LLM_CONTEXT_SAFETY_MARGIN: "${LLM_CONTEXT_SAFETY_MARGIN:?Set LLM_CONTEXT_SAFETY_MARGIN in .env}"
-    ports:
-      - "127.0.0.1:8080:8080"
     networks:
       - llm-internal
     restart: unless-stopped
 
-  # 2. Python Orchestrator & Lightweight UI (Port 5000)
   analyst:
-    build:
-      context: . 
+    image: cyber-llm-analyst:local
+    build: &analyst-build
+      context: .
       dockerfile: Dockerfile
     container_name: analyst
+    command: ["python", "service_entrypoint.py", "api"]
     ports:
       - "127.0.0.1:5000:5000"
-    environment:
-      LLM_BASE_URL: "http://llama_server:8080/v1/chat/completions"
+    environment: &job-environment
+      LLM_BASE_URL: "http://llama:8080/v1/chat/completions"
       MODEL_NAME: "${MODEL_NAME:?Set MODEL_NAME in .env}"
       LLM_CONTEXT_SIZE: "${LLM_CONTEXT_SIZE:?Set LLM_CONTEXT_SIZE in .env}"
       LLM_MAX_OUTPUT_TOKENS: "${LLM_MAX_OUTPUT_TOKENS:?Set LLM_MAX_OUTPUT_TOKENS in .env}"
@@ -50,15 +46,82 @@ services:
       ROUTER_TOP_K: "${ROUTER_TOP_K}"
       ROUTER_SEMANTIC_WEIGHT: "${ROUTER_SEMANTIC_WEIGHT}"
       ROUTER_NAME_BOOST: "${ROUTER_NAME_BOOST}"
+      ROUTER_ACTIVATION_ENABLED: "${ROUTER_ACTIVATION_ENABLED:-true}"
+      ROUTER_MIN_SEMANTIC_SCORE: "${ROUTER_MIN_SEMANTIC_SCORE:-0.36}"
+      ROUTER_MIN_COMBINED_SCORE: "${ROUTER_MIN_COMBINED_SCORE:-0.45}"
+      ROUTER_SEMANTIC_ONLY_SCORE: "${ROUTER_SEMANTIC_ONLY_SCORE:-0.65}"
+      ROUTER_SELECTION_ENABLED: "${ROUTER_SELECTION_ENABLED:-true}"
+      ROUTER_REDUNDANCY_SIMILARITY: "${ROUTER_REDUNDANCY_SIMILARITY:-0.70}"
+      ROUTER_RELATIVE_SCORE_FLOOR: "${ROUTER_RELATIVE_SCORE_FLOOR:-0.80}"
+      ROUTER_NOVELTY_WEIGHT: "${ROUTER_NOVELTY_WEIGHT:-0.25}"
+      ROUTER_LONG_REQUESTS_ENABLED: "${ROUTER_LONG_REQUESTS_ENABLED:-true}"
+      ROUTER_QUERY_CHUNK_TOKENS: "${ROUTER_QUERY_CHUNK_TOKENS:-192}"
+      ROUTER_QUERY_OVERLAP_TOKENS: "${ROUTER_QUERY_OVERLAP_TOKENS:-32}"
+      ROUTER_QUERY_MAX_VIEWS: "${ROUTER_QUERY_MAX_VIEWS:-8}"
+      ROUTER_QUERY_MAX_DIRECTIVE_VIEWS: "${ROUTER_QUERY_MAX_DIRECTIVE_VIEWS:-3}"
+      ROUTER_QUERY_MAX_PROMPT_CHARACTERS: "${ROUTER_QUERY_MAX_PROMPT_CHARACTERS:-200000}"
       LLM_TIMEOUT_SECONDS: "${LLM_TIMEOUT_SECONDS}"
       TOKEN_COUNT_TIMEOUT_SECONDS: "${TOKEN_COUNT_TIMEOUT_SECONDS}"
       MAX_PENDING_REQUESTS: "${MAX_PENDING_REQUESTS}"
       PENDING_REQUEST_TTL_SECONDS: "${PENDING_REQUEST_TTL_SECONDS}"
+      MEMORY_ENABLED: "${MEMORY_ENABLED:-false}"
+      MEMORY_DATABASE_PATH: "${MEMORY_DATABASE_PATH:-/app/data/memory.sqlite3}"
+      MEMORY_SCOPE: "${MEMORY_SCOPE:-local-operator}"
+      MEMORY_RETENTION_DAYS: "${MEMORY_RETENTION_DAYS:-}"
+      MEMORY_BUSY_TIMEOUT_MS: "${MEMORY_BUSY_TIMEOUT_MS:-5000}"
+      SERVICE_HARDWARE_TARGET: generic
+      SERVICE_LOCAL_TENANT_ID: "${SERVICE_LOCAL_TENANT_ID:-local}"
+      SERVICE_LOCAL_OWNER_ID: "${SERVICE_LOCAL_OWNER_ID:-local-operator}"
+      SERVICE_JOB_DATABASE_PATH: /app/data/jobs.sqlite3
+      SERVICE_MAX_ACTIVE_JOBS: "1"
+      SERVICE_MAX_INFERENCE_REQUESTS: "1"
+      SERVICE_WORKER_CONCURRENCY: "1"
+      SERVICE_OWNER_MAX_ACTIVE: "1"
+      SERVICE_MAX_WAITING_JOBS: "${SERVICE_MAX_WAITING_JOBS:-16}"
+      SERVICE_OWNER_MAX_WAITING: "${SERVICE_OWNER_MAX_WAITING:-4}"
+      SERVICE_MAX_PENDING_REVIEWS: "${SERVICE_MAX_PENDING_REVIEWS:-4}"
+      SERVICE_HEARTBEAT_SECONDS: "5"
+      SERVICE_WORKER_LEASE_SECONDS: "30"
+      SERVICE_JOB_DEADLINE_SECONDS: "${SERVICE_JOB_DEADLINE_SECONDS:-600}"
+      SERVICE_REVIEW_TTL_SECONDS: "${SERVICE_REVIEW_TTL_SECONDS:-600}"
+      SERVICE_MAX_PROMPT_CHARACTERS: "${SERVICE_MAX_PROMPT_CHARACTERS:-200000}"
+      SERVICE_CONTENT_RETENTION_SECONDS: "${SERVICE_CONTENT_RETENTION_SECONDS:-3600}"
+      SERVICE_INFERENCE_MEMORY_BUDGET_BYTES: "${SERVICE_INFERENCE_MEMORY_BUDGET_BYTES:-6442450944}"
+    volumes:
+      - analyst-data:/app/data
     depends_on:
       - llama
     networks:
       - llm-internal
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json, urllib.request; r = urllib.request.urlopen('http://127.0.0.1:5000/v1/job-capabilities', timeout=3); assert json.load(r)['enabled'] is True"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    stop_grace_period: "${SERVICE_STOP_GRACE_PERIOD:-300s}"
+    restart: unless-stopped
+
+  worker:
+    image: cyber-llm-analyst:local
+    build: *analyst-build
+    command: ["python", "service_entrypoint.py", "worker"]
+    environment: *job-environment
+    volumes:
+      - analyst-data:/app/data
+    depends_on:
+      - llama
+    networks:
+      - llm-internal
+    stop_grace_period: "${SERVICE_STOP_GRACE_PERIOD:-300s}"
     restart: unless-stopped
 
 networks:
   llm-internal:
+
+volumes:
+  analyst-data:

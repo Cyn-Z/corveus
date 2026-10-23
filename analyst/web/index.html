@@ -1,76 +1,186 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-    <meta
-        name="description"
-        content="Local cybersecurity LLM analyst terminal"
-    >
-
-    <title>CYBER-LLM | Analyst Terminal</title>
-
+    <meta name="description" content="Local Cybersecurity Analyst Workspace">
+    <title>CORVEUS | Analyst Workspace</title>
+    <link rel="icon" href="/corveus-assets/raven.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/style.css">
+    <script src="/shell.js" defer></script>
+    <script src="/jobs-client.js" defer></script>
     <script src="/app.js" defer></script>
 </head>
-
 <body>
-    <main class="terminal">
-        <header class="terminal-header">
-            <h1>[ CYBER-LLM ]</h1>
-            <span class="terminal-subtitle">ANALYST TERMINAL</span>
-        </header>
-
-        <section
-            id="stats-panel"
-            aria-labelledby="stats-heading"
-        >
-            <h2 id="stats-heading" class="stats-title">
-                [ MODEL STATUS ]
-            </h2>
-
-            <div class="stat-row">
-                <span>Context Limit:</span>
-                <span id="context-size">--</span>
+    <div class="terminal">
+        <aside id="conversation-panel" aria-labelledby="conversation-heading">
+            <div class="workspace-brand">
+                <img class="brand-mark" src="/corveus-assets/raven.svg" alt="">
+                <div>
+                    <p class="brand-name">CORVEUS</p>
+                    <p class="brand-caption">ANALYST WORKSPACE</p>
+                </div>
+                <button id="sidebar-close" class="icon-button mobile-only" type="button"
+                    aria-label="Close Conversation Navigation">×</button>
             </div>
 
-            <div class="stat-row">
-                <span>Tokens Used:</span>
-                <span id="tokens-used">--</span>
-            </div>
-
-            <div class="stat-row">
-                <span>Context Used:</span>
-                <span id="context-percent">--</span>
-            </div>
-        </section>
-
-        <section
-            id="chat-box"
-            aria-label="Conversation"
-            aria-live="polite"
-            aria-relevant="additions"
-        ></section>
-
-        <form id="input-container">
-            <label for="prompt-input" class="visually-hidden">
-                Enter a prompt or paste a log snippet
-            </label>
-
-            <textarea
-                id="prompt-input"
-                name="prompt"
-                placeholder="Enter prompt or paste log snippet..."
-                rows="3"
-                required
-            ></textarea>
-
-            <button id="send-button" type="submit">
-                SEND
+            <nav class="product-nav" aria-label="Main navigation"><div class="product-current"><img src="/corveus-assets/chat.svg" alt="">Chat</div><button type="button" class="future-feature nav-feature" disabled><img src="/corveus-assets/search.svg" alt=""><span>Investigations</span><span class="development-tag">[Under Development]</span></button><button type="button" class="future-feature nav-feature" disabled><img src="/corveus-assets/book.svg" alt=""><span>Knowledge</span><span class="development-tag">[Under Development]</span></button><button type="button" class="future-feature nav-feature" disabled><img src="/corveus-assets/tool.svg" alt=""><span>Tools</span><span class="development-tag">[Under Development]</span></button><button type="button" class="future-feature nav-feature" disabled><img src="/corveus-assets/memory.svg" alt=""><span>Memory</span><span class="development-tag">[Under Development]</span></button><button type="button" class="future-feature nav-feature" disabled><img src="/corveus-assets/file.svg" alt=""><span>Reports</span><span class="development-tag">[Under Development]</span></button></nav>
+            <button id="conversation-new" class="primary-button" type="button">
+                <span aria-hidden="true">+</span> New Conversation
             </button>
+
+            <label for="conversation-search" class="visually-hidden">Search Loaded Saved Conversations</label>
+            <input id="conversation-search" type="search" placeholder="Search Conversations"
+                autocomplete="off" aria-controls="conversation-list">
+            <div class="navigation-heading">
+                <h2 id="conversation-heading">Saved Conversations</h2>
+                <button id="conversation-refresh" class="icon-button" type="button"
+                    aria-label="Refresh Saved Conversations" title="Refresh Saved Conversations">↻</button>
+            </div>
+            <nav class="conversation-history" aria-labelledby="conversation-heading">
+                <ul id="conversation-list"></ul>
+                <p id="conversation-list-status" class="muted" role="status">Loading Saved Conversations…</p>
+            </nav>
+
+            <div class="sidebar-footer">
+                <details id="workspace-settings">
+                    <summary>Workspace Settings</summary>
+                    <div class="settings-content">
+                        <label class="persistence-option">
+                            <input id="conversation-enabled" type="checkbox" checked>
+                            Save Conversations
+                        </label>
+                        <label class="persistence-option">
+                            <input id="saved-dark-theme" type="checkbox" aria-describedby="saved-dark-theme-description">
+                            Dark Theme in Saved Mode
+                        </label>
+                        <p class="muted" id="saved-dark-theme-description">Dark theme applies independently of conversation saving.</p>
+                        <p class="muted">Saving Is on by Default.</p>
+                        <p class="muted">Opening Saved History Displays Earlier Messages. The Model Does Not Use Them for Recall Yet.</p>
+                    </div>
+                </details>
+                <p id="conversation-status" class="mode-description">Saved Mode · Ready for a New Conversation</p>
+            </div>
+        </aside>
+
+        <button id="sidebar-backdrop" type="button" aria-label="Close Conversation Navigation"
+            tabindex="-1" hidden></button>
+
+        <main id="conversation-workspace" class="conversation-workspace">
+            <header class="terminal-header">
+                <button id="conversation-sidebar-toggle" class="icon-button" type="button"
+                    aria-controls="conversation-panel" aria-expanded="true"
+                    aria-label="Toggle Conversation Navigation" title="Toggle Conversation Navigation">☰</button>
+                <div class="session-heading">
+                    <div class="session-title-row">
+                        <h1 id="session-title">New Conversation</h1>
+                        <span id="session-mode" class="mode-badge">Saved Mode</span>
+                        <span id="saved-mode-indicator" class="saved-mode-indicator" hidden>
+                            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
+                                <path d="M6 3h12v18l-6-4-6 4V3Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" />
+                                <path d="m9 10 2 2 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                            </svg>
+                            <span>Saving On</span>
+                        </span>
+                    </div>
+                    <p id="session-description">Choose a Conversation Name Before Sending Your First Prompt.</p>
+                </div>
+                <details id="session-actions" class="context-actions" hidden>
+                    <summary aria-label="Current Conversation Actions" title="Conversation Actions">•••</summary>
+                    <div class="action-menu">
+                        <button id="conversation-rename" type="button">Rename Conversation</button>
+                        <button id="conversation-delete" class="danger-text" type="button">Delete Conversation</button>
+                    </div>
+                </details>
+                <div class="architecture future-feature" aria-disabled="true">Air-Gapped Architecture <span class="development-tag">[Under Development]</span></div>
+                <button id="inspector-toggle" class="icon-button" type="button" aria-label="Open session details" aria-haspopup="dialog" aria-controls="workspace-inspector">☷</button>
+            </header>
+
+            <div class="workspace-toolbar">
+                <span id="request-status" role="status">Ready</span>
+                <section id="stats-panel" class="metrics-panel" aria-labelledby="context-usage-heading">
+                    <div class="metrics-heading">
+                        <h2 id="context-usage-heading">Conversation Usage</h2>
+                    </div>
+                    <div id="context-usage-summary" class="context-summary">
+                        <span><strong id="tokens-used">0</strong> Total Tokens</span>
+                    </div>
+                    <details class="metrics-details">
+                        <summary>Usage Details</summary>
+                        <div class="usage-reference">
+                            <div class="metrics-heading">
+                                <span>Latest Recorded Context Size</span>
+                                <span><span id="context-size">--</span> Tokens</span>
+                            </div>
+                            <div class="metrics-heading">
+                                <span>Cumulative Usage / Reference Size</span>
+                                <span id="context-percent">--</span>
+                            </div>
+                            <div id="context-progress" class="context-track" role="progressbar"
+                                aria-labelledby="context-usage-heading"
+                                aria-describedby="context-usage-summary context-remaining usage-reference-note"
+                                aria-valuemin="0" aria-valuemax="100" aria-valuetext="Usage Unavailable">
+                                <div id="context-progress-fill" class="context-fill"></div>
+                            </div>
+                            <p id="context-remaining" class="usage-coverage">Context Reference Unavailable</p>
+                            <p id="usage-reference-note" class="usage-coverage">Cumulative Input and Output Include Repeated Prompt Content. This Is a Reference Comparison, Not Current Context Occupancy or a User Budget.</p>
+                        </div>
+                        <div class="metrics-breakdown">
+                            <span id="metrics-model">Latest Model: --</span>
+                            <span>Latest Request · Input <span id="request-input-tokens">--</span> · Output <span id="request-output-tokens">--</span></span>
+                        </div>
+                        <div class="conversation-usage-row">
+                            <span id="conversation-usage-label">Session Usage</span>
+                            <span>Input <strong id="conversation-input-tokens">0</strong></span>
+                            <span>Output <strong id="conversation-output-tokens">0</strong></span>
+                            <span>Total <strong id="conversation-total-tokens">0</strong></span>
+                        </div>
+                        <p id="usage-coverage" class="usage-coverage">0 Completed Exchanges</p>
+                    </details>
+                </section>
+            </div>
+
+            <p id="conversation-notice" role="status" hidden></p>
+            <section id="chat-box" aria-label="Conversation" aria-live="polite" aria-relevant="additions"></section>
+
+            <div id="pending-request-bar" hidden>
+                <span>Skill Selection Needs Your Review.</span>
+                <button id="conversation-discard" class="secondary-button" type="button">Discard Pending Request</button>
+            </div>
+            <form id="input-container">
+                <label for="prompt-input" class="visually-hidden">Enter a Prompt or Paste a Log Snippet</label>
+                <textarea id="prompt-input" name="prompt" placeholder="Ask Corveus…"
+                    rows="3" required></textarea>
+                <div class="composer-future future-feature" aria-disabled="true"><button type="button" disabled>Auto (Skill Router)</button><button type="button" disabled>Use Memory (This Session)</button><span class="development-tag">[Under Development]</span></div>
+                <button id="send-button" class="primary-button" type="submit">Send</button>
+            </form>
+        </main>
+
+        <dialog id="workspace-inspector" aria-labelledby="inspector-heading">
+            <div class="inspector-heading"><h2 id="inspector-heading">Session Details</h2><button id="inspector-close" class="icon-button" type="button" aria-label="Close session details">×</button></div>
+            <section class="inspector-card component-status" aria-labelledby="component-status-heading"><h2 id="component-status-heading">Component Status</h2><div class="component-row"><span>Analyst API</span><span id="status-analyst" class="component-state" data-state="unknown"><span class="status-dot" aria-hidden="true"></span><span class="status-label">Checking</span></span></div><div class="component-row"><span>Skill Router</span><span id="status-router" class="component-state" data-state="unknown"><span class="status-dot" aria-hidden="true"></span><span class="status-label">Checking</span></span></div><div class="component-row"><span>Model Runtime</span><span id="status-model" class="component-state" data-state="unknown"><span class="status-dot" aria-hidden="true"></span><span class="status-label">Checking</span></span></div><div class="component-row"><span>Conversation Storage</span><span id="status-persistence" class="component-state" data-state="unknown"><span class="status-dot" aria-hidden="true"></span><span class="status-label">Checking</span></span></div><p class="muted">Live service checks · session recall remains under development.</p></section>
+            <section class="inspector-card future-feature" aria-disabled="true"><h2><img src="/corveus-assets/file.svg" alt="">Context</h2><span class="development-tag">[Under Development]</span><div class="ingestion-placeholder"><img src="/corveus-assets/upload.svg" alt=""><p>File ingestion</p><p>Session files and analysis context</p><small>TXT, LOG, JSON, PCAP, etc.</small></div></section>
+            <section class="inspector-card"><h2><img src="/corveus-assets/router.svg" alt="">Skill Router</h2><p>Hybrid BM25 + Semantic</p><p>Skills are automatically selected based on your request.</p><div class="future-feature" aria-disabled="true"><span class="development-tag">[Under Development]</span><button type="button" disabled>Router Controls</button></div></section>
+            <section class="inspector-card future-feature" aria-disabled="true"><h2><img src="/corveus-assets/memory.svg" alt="">Short-Term Memory</h2><span class="development-tag">[Under Development]</span><p>Scope: This session</p><p>Conversation history is used to maintain context for this session.</p></section>
+            <section class="inspector-card" aria-labelledby="model-heading"><h2 id="model-heading"><img src="/corveus-assets/model.svg" alt="">Model</h2><p>Configured model: <strong id="inspector-model">Unavailable</strong></p><p>Runtime: <span id="inspector-runtime">Unavailable</span></p><p>Connection: <span id="inspector-connection">Checking</span></p><p class="muted">Current server configuration. Historical request models appear in Conversation Usage.</p></section>
+            <section class="inspector-card" aria-labelledby="saved-session-heading"><h2 id="saved-session-heading">Conversation</h2><p id="inspector-conversation-title">New Conversation</p><p id="inspector-saving-state">Saving On</p><p class="muted">Saved history is available for inspection. Model recall remains under development.</p></section>
+            <section class="inspector-card" aria-labelledby="inspector-usage-heading"><h2 id="inspector-usage-heading">Conversation Usage</h2><p id="inspector-usage-total">0 Total Tokens</p><p id="inspector-usage-coverage" class="muted">0 Completed Exchanges</p><p id="inspector-request-model" class="muted">Latest Model: --</p><p id="inspector-request-tokens" class="muted">Input -- · Output --</p><p class="muted">Cumulative usage counts repeated prompt content; it is not current context occupancy.</p></section>
+            <section class="inspector-card future-feature" aria-disabled="true"><h2>Collections</h2><span class="development-tag">[Under Development]</span><p>Recent Activity · Saved Prompts · Analyst Notes · Detection Content</p></section>
+        </dialog>
+    </div>
+
+    <dialog id="conversation-dialog" aria-labelledby="conversation-dialog-title">
+        <form id="conversation-name-form">
+            <h2 id="conversation-dialog-title">New Conversation</h2>
+            <label for="conversation-title">Conversation Name</label>
+            <input id="conversation-title" type="text" maxlength="120" required autocomplete="off"
+                placeholder="For Example: Blue Lantern" aria-describedby="conversation-dialog-error">
+            <p id="conversation-dialog-error" class="danger-text" role="alert" hidden></p>
+            <div class="dialog-actions">
+                <button id="conversation-dialog-cancel" class="secondary-button" type="button">Cancel</button>
+                <button id="conversation-dialog-save" class="primary-button" type="submit">Create Conversation</button>
+            </div>
         </form>
-    </main>
+    </dialog>
 </body>
 </html>

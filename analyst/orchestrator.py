@@ -7,7 +7,15 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 import os
-from sentence_transformers import SentenceTransformer
+from collections import Counter
+from router_policy import RouterPolicy, RouterSelectionPolicy, GENERIC_ACTIVATION_TERMS
+from router_query_plan import (
+    QueryPlanner,
+    QueryPlanSettings,
+    add_query_plan_arguments,
+    query_plan_settings_from_arguments,
+)
+from router_long_requests import route_long_request
 
 
 @dataclass(frozen=True)
@@ -106,21 +114,6 @@ def tokenize(text: str) -> list[str]:
     }
     tokens = re.findall(r"[a-z0-9]+", text.lower())
     return [token for token in tokens if token not in STOP_WORDS]
-
-
-'''
-def tokenize(text: str) -> list[str]:
-    """
-    Normalize text into lowercase searchable tokens.
-    For example:
-        "Analyze Windows Event Logs!"
-        becomes:
-        ["analyze", "windows", "event", "logs"]
-    This gives the router a consistent representation of both user prompts
-    and skill metadata without requiring an external search library.
-    """
-    return re.findall(r"[a-z0-9]+", text.lower())
-'''
 
 
 class SkillRegistry:
@@ -268,6 +261,45 @@ class SkillRegistry:
         return content.strip()
 
 
+@dataclass(frozen=True)
+class SkillScore:
+    """Ranking evidence, not a calibrated probability or activation decision."""
+
+    skill: Skill
+    bm25_score: float
+    name_boost_score: float
+    raw_lexical_score: float
+    normalized_lexical_score: float
+    semantic_score: float
+    combined_score: float
+    matched_terms: tuple[str, ...]
+    matched_name_terms: tuple[str, ...]
+    matched_term_document_frequencies: tuple[tuple[str, int], ...]
+    catalog_size: int = 0
+
+    def diagnostic(self, *, include_terms: bool = False) -> dict:
+        """Omit query-derived words by default; never include instructions."""
+        result = {
+            "skill": self.skill.name,
+            "bm25_score": self.bm25_score,
+            "name_boost_score": self.name_boost_score,
+            "raw_lexical_score": self.raw_lexical_score,
+            "normalized_lexical_score": self.normalized_lexical_score,
+            "semantic_score": self.semantic_score,
+            "combined_score": self.combined_score,
+            "matched_term_count": len(self.matched_terms),
+            "matched_name_term_count": len(self.matched_name_terms),
+            "passes_current_score_floor": self.combined_score > 0,
+        }
+        if include_terms:
+            result["matched_terms"] = list(self.matched_terms)
+            result["matched_name_terms"] = list(self.matched_name_terms)
+            result["matched_term_document_frequencies"] = dict(
+                self.matched_term_document_frequencies
+            )
+        return result
+
+
 class SkillRouter:
     """
     Hybrid skill router combining BM25 lexical retrieval with
@@ -277,11 +309,30 @@ class SkillRouter:
     Skill embeddings are precomputed during initialization.
     """
 
-    def __init__(self, registry: SkillRegistry, *, model_path: str | Path, semantic_weight: float, name_boost: float,):
+    def __init__(
+        self,
+        registry: SkillRegistry,
+        *,
+        model_path: str | Path,
+        semantic_weight: float,
+        name_boost: float,
+        activation_policy: RouterPolicy | None = None,
+        selection_policy: RouterSelectionPolicy | None = None,
+        query_plan_settings: QueryPlanSettings | None = None,
+    ):
         self.registry = registry
         self.semantic_weight = semantic_weight
         self.lexical_weight = 1.0 - semantic_weight
         self.name_boost = name_boost
+        self.activation_policy = (
+            activation_policy if activation_policy is not None else RouterPolicy()
+        )
+        self.selection_policy = (
+            selection_policy
+            if selection_policy is not None
+            else RouterSelectionPolicy()
+        )
+        self.skill_indices = {skill.name: i for i, skill in enumerate(registry.skills)}
         # Configure the local model path for Docker or local development.
         model_path = Path(model_path).resolve()
 
@@ -290,10 +341,20 @@ class SkillRouter:
 
         # Fail at startup if the local model or its dependencies are
         # unavailable. Never download a replacement model.
-        self.model = SentenceTransformer(
-            str(model_path),
-            device="cpu",
-            local_files_only=True,
+        self.model = self._load_embedding_model(model_path)
+        self.query_plan_settings = (
+            query_plan_settings
+            if query_plan_settings is not None
+            else QueryPlanSettings()
+        )
+        self.query_planner = (
+            QueryPlanner(
+                self.model.tokenizer,
+                model_max_seq_length=self.model.max_seq_length,
+                settings=self.query_plan_settings,
+            )
+            if self.query_plan_settings.enabled
+            else None
         )
 
         # Prepare the lexical index.
@@ -311,6 +372,22 @@ class SkillRouter:
             for term in set(document):
                 self.document_frequency[term] = self.document_frequency.get(term, 0) + 1
 
+        # Catalog-only BM25 work is invariant across requests.
+        self.term_frequencies = [Counter(document) for document in self.documents]
+        self.name_tokens = [
+            frozenset(tokenize(skill.name.replace("-", " ")))
+            for skill in registry.skills
+        ]
+        self.document_lengths = [len(document) for document in self.documents]
+        self.bm25_length_factors = [
+            1.5 * (1 - 0.75 + 0.75 * length / (self.avg_length or 1))
+            for length in self.document_lengths
+        ]
+        self.idf = {
+            term: math.log(1 + (len(self.documents) - df + 0.5) / (df + 0.5))
+            for term, df in self.document_frequency.items()
+        }
+
         # Use richer, human-readable metadata for semantic retrieval.
         # Do not embed the full SKILL.md instructions.
         self.skill_texts = [
@@ -323,7 +400,7 @@ class SkillRouter:
         ]
 
         # Precompute normalized skill embeddings once at startup.
-        # Store vectors as tuples so the router needs no direct NumPy API.
+        # Keep the public tuple vectors for diagnostics/regression callers.
         if self.skill_texts:
             encoded = self.model.encode(
                 self.skill_texts,
@@ -338,12 +415,28 @@ class SkillRouter:
         else:
             self.skill_embeddings = []
 
+        # NumPy is already a dependency of the local embedding stack. Float64
+        # preserves the precision of the former Python-float dot products.
+        import numpy as np
+
+        self.embedding_matrix = np.asarray(self.skill_embeddings, dtype=np.float64)
+        if self.skill_embeddings:
+            self.embedding_matrix.setflags(write=False)
+
         print(
             f"Hybrid router initialized: "
             f"{len(registry.skills)} skills indexed; "
             f"MiniLM embeddings cached.",
             flush=True,
         )
+
+    @staticmethod
+    def _load_embedding_model(model_path: Path):
+        # Keep scoring tests independent of optional model packages. Runtime
+        # still uses the same local-only model and fails if it is unavailable.
+        from sentence_transformers import SentenceTransformer
+
+        return SentenceTransformer(str(model_path), device="cpu", local_files_only=True)
 
     def search(self, prompt: str, limit: int = 8):
         """
@@ -352,6 +445,375 @@ class SkillRouter:
         The combined score is a ranking value, not a probability.
         """
 
+        selected, _ = self.route(prompt, limit, explain=False)
+        return selected
+
+    def route(self, prompt: str, limit: int = 8, *, include_terms=False, explain=True):
+        """Return selected (score, Skill) pairs and an opt-in explanation.
+
+        Apply applicability before top-k so a rejected high-ranking candidate
+        cannot displace an eligible lower-ranked skill. No logging is added.
+        """
+        if (
+            not isinstance(prompt, str)
+            or not prompt.strip()
+            or limit <= 0
+            or not self.registry.skills
+        ):
+            return [], {"reason": "empty_request_or_catalog", "candidates": []}
+
+        bypass = self.activation_policy.bypass_reason(prompt)
+        if bypass is not None:
+            return [], {"reason": bypass, "candidates": []}
+
+        selection = getattr(
+            self, "selection_policy", RouterSelectionPolicy(enabled=False)
+        )
+        selection_prompt = (
+            self.affirmative_task(prompt) if selection.enabled else prompt
+        )
+        planner = getattr(self, "query_planner", None)
+        plan = planner.plan(selection_prompt) if planner is not None else None
+
+        if plan is not None and plan.mode == "chunked":
+            return route_long_request(
+                self,
+                plan,
+                limit=limit,
+                include_terms=include_terms,
+                explain=explain,
+                leading_exclusion_omitted=selection_prompt != prompt,
+            )
+
+        candidates = self.score_candidates(
+            selection_prompt,
+            len(self.registry.skills),
+        )
+        eligible = [item for item in candidates if self.activation_policy.accepts(item)]
+        if selection.enabled:
+            selected, selection_details = self._select_diverse(
+                selection_prompt, eligible, limit
+            )
+            selection_details["leading_exclusion_omitted"] = selection_prompt != prompt
+        else:
+            selected = eligible[:limit]
+            selection_details = {"enabled": False}
+
+        if not explain:
+            return [(item.combined_score, item.skill) for item in selected], {}
+        selected_names = {item.skill.name for item in selected}
+        selected_evidence = {item.skill.name: item for item in selected}
+        # Always explain selected candidates, even if filtering promoted one
+        # from outside the initial top-k ranking window.
+        visible = [
+            item
+            for rank, item in enumerate(candidates)
+            if rank < limit or item.skill.name in selected_names
+        ]
+        planning = plan.diagnostic() if plan is not None else {"mode": "disabled"}
+        planning["embedding_queries"] = 1 + selection_details.get("explicit_tasks", 0)
+        explanation = {
+            "reason": "skills_selected" if selected else "no_relevant_skills",
+            "selection": selection_details,
+            "query_plan": planning,
+            "candidates": [
+                {
+                    **selected_evidence.get(item.skill.name, item).diagnostic(
+                        include_terms=include_terms
+                    ),
+                    "activation_reason": self.activation_policy.candidate_reason(
+                        selected_evidence.get(item.skill.name, item)
+                    ),
+                    "selected": item.skill.name in selected_names,
+                }
+                for item in visible
+            ],
+        }
+        return [(item.combined_score, item.skill) for item in selected], explanation
+
+    @staticmethod
+    def affirmative_task(prompt):
+        """Omit only an explicit leading exclusion followed by a new task.
+
+        The original request still reaches inference unchanged. No attempt is
+        made to understand arbitrary negation inside logs or compound prose.
+        """
+        match = re.fullmatch(
+            r"\s*(?:do not|don't|ignore)\b[^.;\n]+[.;\n]\s*(.+)",
+            prompt,
+            flags=re.I | re.S,
+        )
+        if match and re.match(
+            r"(?:investigate|analy[sz]e|audit|check|inspect|examine|triage|hunt|detect|write|configure)\b",
+            match.group(1),
+            re.I,
+        ):
+            return match.group(1)
+        return prompt
+
+    @staticmethod
+    def task_clauses(prompt):
+        """Bounded explicit task separation, never an LLM rewrite or log chunker."""
+        if len(prompt) > 4000:
+            return ()
+        parts = re.split(
+            r"\b(?:and\s+separately|separately|then)\b|;", prompt, flags=re.I
+        )
+        if not 2 <= len(parts) <= 3:
+            return ()
+        action = re.compile(
+            r"\b(?:investigate|analy[sz]e|audit|check|inspect|triage|hunt|detect|write|configure)\b",
+            re.I,
+        )
+        if any(
+            re.search(r"\b(?:do not|don't|ignore|without|instead of)\b", part, re.I)
+            for part in parts
+        ):
+            return ()
+        if not all(action.search(part) for part in parts):
+            return ()
+        return tuple(part.strip(" ,.") for part in parts)
+
+    def _select_diverse(
+        self,
+        prompt,
+        eligible,
+        limit,
+        *,
+        task_candidates=None,
+    ):
+        policy = self.selection_policy
+        selected = []
+        rejected = {}
+        by_name = {item.skill.name: item for item in eligible}
+        tasks = []
+        task_selections = []
+        tools = {
+            "splunk",
+            "wireshark",
+            "tshark",
+            "volatility",
+            "volatility3",
+            "sigma",
+            "yara",
+            "windows",
+            "linux",
+            "kubernetes",
+            "aws",
+            "azure",
+        }
+
+        def priority(item, text):
+            terms = set(tokenize(text)) - GENERIC_ACTIVATION_TERMS
+            requested_tools = terms & tools
+            names = self.name_tokens[self.skill_indices[item.skill.name]]
+            total = sum(self.idf.get(term, 0.0) for term in terms) or 1.0
+            specificity = sum(self.idf.get(term, 0.0) for term in names & terms) / total
+            tool_coverage = len(names & requested_tools) / (len(requested_tools) or 1)
+            return item.combined_score + 0.15 * specificity + 0.15 * tool_coverage
+
+        def seed(pool, text):
+            terms = set(tokenize(text)) - GENERIC_ACTIVATION_TERMS
+            requested = terms & tools
+            if requested:
+                maximum = max(
+                    (
+                        len(
+                            self.name_tokens[self.skill_indices[x.skill.name]]
+                            & requested
+                        )
+                        for x in pool
+                    ),
+                    default=0,
+                )
+                if maximum:
+                    pool = [
+                        x
+                        for x in pool
+                        if len(
+                            self.name_tokens[self.skill_indices[x.skill.name]]
+                            & requested
+                        )
+                        == maximum
+                    ]
+            return (
+                min(pool, key=lambda x: (-priority(x, text), x.skill.name))
+                if pool
+                else None
+            )
+
+        # Long requests supply already-scored directive candidates.
+        # An empty supplied list also prevents additional encoding.
+        if task_candidates is None:
+            task_candidates = [
+                (
+                    clause,
+                    self.score_candidates(
+                        clause,
+                        len(self.registry.skills),
+                    ),
+                )
+                for clause in self.task_clauses(prompt)
+            ]
+
+        # Preserve explicit task coverage before filling remaining slots.
+        for clause, ranked in task_candidates:
+            accepted = [item for item in ranked if self.activation_policy.accepts(item)]
+            preferred = seed(accepted, clause)
+            if preferred:
+                accepted = [preferred] + [
+                    x for x in accepted if x.skill.name != preferred.skill.name
+                ]
+            tasks.append(accepted)
+            by_name.update(
+                {
+                    item.skill.name: by_name.get(item.skill.name, item)
+                    for item in accepted
+                }
+            )
+        for accepted in tasks:
+            for item in accepted:
+                if len(selected) >= limit:
+                    break
+                if item.skill.name not in {x.skill.name for x in selected}:
+                    selected.append(item)
+                    task_selections.append(item.skill.name)
+                    break
+        # Reserve exact rare named targets (for example Sigma or Kerberoasting)
+        # when eligible guidance exists; never promote an inapplicable skill.
+        terms = set(tokenize(prompt)) - GENERIC_ACTIVATION_TERMS
+        artifact_terms = {
+            "dump",
+            "dumps",
+            "log",
+            "logs",
+            "event",
+            "events",
+            "header",
+            "headers",
+            "email",
+            "emails",
+            "packet",
+            "packets",
+            "capture",
+            "commands",
+            "processes",
+        }
+        anchors = sorted(
+            (
+                term
+                for term in terms - artifact_terms
+                if self.document_frequency.get(term, len(self.registry.skills))
+                <= len(self.registry.skills) * 0.03
+            ),
+            key=lambda term: (-self.idf.get(term, 0.0), term),
+        )
+        for term in anchors[:3]:
+            pool = [
+                x
+                for x in eligible
+                if term in self.name_tokens[self.skill_indices[x.skill.name]]
+            ]
+            if re.search(r"\b(?:detect|hunt|audit)\b", prompt, re.I):
+                defensive = [
+                    x
+                    for x in pool
+                    if re.match(
+                        r"(?:detecting|hunting|auditing|analyzing)-", x.skill.name
+                    )
+                ]
+                pool = defensive or pool
+            item = seed(pool, prompt)
+            if (
+                item
+                and len(selected) < limit
+                and item.skill.name not in {x.skill.name for x in selected}
+            ):
+                selected.append(item)
+        if not selected and eligible:
+            selected.append(seed(eligible, prompt))
+        if not selected:
+            return [], {"enabled": True, "explicit_tasks": len(tasks), "rejected": {}}
+        # Tool/platform distinctions are intentionally conservative: never
+        # suppress a candidate as redundant solely across these differences.
+        query_terms = set(tokenize(prompt)) - GENERIC_ACTIVATION_TERMS
+        best_score = max(item.combined_score for item in selected)
+        covered = set().union(
+            *(set(item.matched_terms) & query_terms for item in selected)
+        )
+        remaining = [
+            item
+            for item in by_name.values()
+            if item.skill.name not in {s.skill.name for s in selected}
+        ]
+        while remaining and len(selected) < limit:
+            choices = []
+            for item in remaining:
+                index = self.skill_indices[item.skill.name]
+                similarities = []
+                redundant = False
+                for prior in selected:
+                    other = self.skill_indices[prior.skill.name]
+                    similarity = max(
+                        0.0,
+                        min(
+                            1.0,
+                            float(
+                                self.embedding_matrix[index]
+                                @ self.embedding_matrix[other]
+                            ),
+                        ),
+                    )
+                    similarities.append(similarity)
+                    same_tools = (self.name_tokens[index] & tools) == (
+                        self.name_tokens[other] & tools
+                    )
+                    new_evidence = (set(item.matched_terms) & query_terms) - covered
+                    if (
+                        similarity >= policy.redundancy_similarity
+                        and same_tools
+                        and not new_evidence
+                    ):
+                        redundant = True
+                if redundant:
+                    rejected[item.skill.name] = "redundant_guidance"
+                    continue
+                if item.combined_score < best_score * policy.relative_score_floor:
+                    rejected[item.skill.name] = "limited_additional_relevance"
+                    continue
+                marginal = priority(item, prompt) - policy.novelty_weight * max(
+                    similarities
+                )
+                choices.append((marginal, item))
+            if not choices:
+                break
+            choices.sort(key=lambda pair: (-pair[0], pair[1].skill.name))
+            item = choices[0][1]
+            if choices[0][0] < best_score * max(
+                0.0, policy.relative_score_floor - policy.novelty_weight
+            ):
+                break
+            selected.append(item)
+            covered.update(set(item.matched_terms) & query_terms)
+            remaining = [
+                candidate
+                for candidate in remaining
+                if candidate.skill.name != item.skill.name
+            ]
+        return selected, {
+            "enabled": True,
+            "explicit_tasks": len(tasks),
+            "task_selections": task_selections,
+            "rejected": rejected,
+        }
+
+    def score_candidates(self, prompt: str, limit: int = 8) -> list[SkillScore]:
+        """Expose the existing ranking, including zero-score candidates.
+
+        No instructions are loaded and no diagnostic data is logged. The
+        ranking formula is unchanged. This method deliberately bypasses the
+        activation policy for offline score inspection.
+        """
         if not isinstance(prompt, str) or not prompt.strip():
             return []
 
@@ -365,37 +827,33 @@ class SkillRouter:
             normalize_embeddings=True,
             show_progress_bar=False,
         )
-        query_vector = tuple(float(value) for value in query_vector)
+        import numpy as np
 
-        # Calculate cosine similarity using normalized vectors.
-        # No direct NumPy operations are needed.
-        semantic_scores = [
-            max(
-                0.0,
-                min(
-                    1.0,
-                    sum(a * b for a, b in zip(query_vector, skill_vector)),
-                ),
+        query_vector = np.asarray(query_vector, dtype=np.float64)
+        if (
+            query_vector.ndim != 1
+            or query_vector.shape[0] != self.embedding_matrix.shape[1]
+        ):
+            raise ValueError(
+                "Query embedding dimension does not match skill embeddings"
             )
-            for skill_vector in self.skill_embeddings
-        ]
+        # A matrix-vector contraction avoids per-component Python loops and
+        # does not dispatch tiny catalog operations to a threaded BLAS pool.
+        semantic_scores = np.clip(
+            np.einsum("ij,j->i", self.embedding_matrix, query_vector, optimize=False),
+            0.0,
+            1.0,
+        )
 
         # Calculate BM25 scores.
         query_terms = set(tokenize(prompt))
         total_docs = len(self.documents)
 
         lexical_scores = []
+        lexical_evidence = []
 
-        k1 = 1.5
-        b = 0.75
-
-        for skill, document in zip(self.registry.skills, self.documents):
-            frequencies = {}
-
-            for term in document:
-                frequencies[term] = frequencies.get(term, 0) + 1
-
-            length = len(document)
+        for index, skill in enumerate(self.registry.skills):
+            frequencies = self.term_frequencies[index]
             score = 0.0
 
             for term in query_terms:
@@ -404,18 +862,25 @@ class SkillRouter:
                 if not tf:
                     continue
 
-                df = self.document_frequency.get(term, 0)
-
-                idf = math.log(1 + (total_docs - df + 0.5) / (df + 0.5))
-
-                denominator = tf + k1 * (1 - b + b * length / (self.avg_length or 1))
-
-                score += idf * tf * (k1 + 1) / denominator
+                denominator = tf + self.bm25_length_factors[index]
+                score += self.idf[term] * tf * 2.5 / denominator
 
             # Apply the skill-name boost once per skill, not once per term.
-            prompt_tokens = set(tokenize(prompt))
-            name_tokens = set(tokenize(skill.name.replace("-", " ")))
-            score += self.name_boost * len(prompt_tokens & name_tokens)
+            name_tokens = self.name_tokens[index]
+            matched_name_terms = tuple(sorted(query_terms & name_tokens))
+            boosted_terms = matched_name_terms
+            if self.selection_policy.enabled:
+                boosted_terms = tuple(
+                    term
+                    for term in matched_name_terms
+                    if term not in GENERIC_ACTIVATION_TERMS
+                )
+            name_boost_score = self.name_boost * len(boosted_terms)
+            matched_terms = tuple(sorted(query_terms & frequencies.keys()))
+            lexical_evidence.append(
+                (score, name_boost_score, matched_terms, matched_name_terms)
+            )
+            score += name_boost_score
 
             lexical_scores.append(score)
 
@@ -427,25 +892,56 @@ class SkillRouter:
         else:
             lexical_scores = [0.0] * len(lexical_scores)
 
-        # Initial blend: favor semantic matching while retaining exact-term
-        # matching. Tune these weights against representative test prompts.
-        semantic_weight = 0.60
-        lexical_weight = 0.40
-
         results = []
 
         for index, skill in enumerate(self.registry.skills):
-            semantic = semantic_scores[index]
+            semantic = float(semantic_scores[index])
             lexical = lexical_scores[index]
 
-            combined = (self.semantic_weight * semantic + self.lexical_weight * lexical)
+            combined = self.semantic_weight * semantic + self.lexical_weight * lexical
+            # Matrix reduction can differ by a few ulps. Preserve the former
+            # scalar arithmetic at activation boundaries instead of allowing
+            # numerical noise to decide applicability.
+            policy = self.activation_policy
+            if (
+                abs(semantic - policy.min_semantic_score) <= 1e-12
+                or abs(semantic - policy.semantic_only_score) <= 1e-12
+                or abs(combined - policy.min_combined_score) <= 1e-12
+            ):
+                semantic = max(
+                    0.0,
+                    min(
+                        1.0,
+                        sum(
+                            float(a) * b
+                            for a, b in zip(query_vector, self.skill_embeddings[index])
+                        ),
+                    ),
+                )
+                combined = (
+                    self.semantic_weight * semantic + self.lexical_weight * lexical
+                )
 
-            # Avoid returning unrelated skills merely because they exist.
-            # This is a ranking floor, not a calibrated confidence value.
-            if combined > 0:
-                results.append((combined, skill))
+            bm25, boost, terms, name_terms = lexical_evidence[index]
+            results.append(
+                SkillScore(
+                    skill=skill,
+                    bm25_score=bm25,
+                    name_boost_score=boost,
+                    raw_lexical_score=bm25 + boost,
+                    normalized_lexical_score=lexical,
+                    semantic_score=semantic,
+                    combined_score=combined,
+                    catalog_size=total_docs,
+                    matched_terms=terms,
+                    matched_name_terms=name_terms,
+                    matched_term_document_frequencies=tuple(
+                        (term, self.document_frequency.get(term, 0)) for term in terms
+                    ),
+                )
+            )
 
-        results.sort(key=lambda result: (-result[0], result[1].name))
+        results.sort(key=lambda result: (-result.combined_score, result.skill.name))
 
         return results[:limit]
 
@@ -483,12 +979,47 @@ def main():
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--semantic-weight", type=float, default=0.60)
     parser.add_argument("--name-boost", type=float, default=3.0)
-
+    parser.add_argument("--legacy-routing", action="store_true")
+    parser.add_argument("--legacy-selection", action="store_true")
+    parser.add_argument("--min-semantic-score", type=float, default=0.36)
+    parser.add_argument("--min-combined-score", type=float, default=0.45)
+    parser.add_argument("--semantic-only-score", type=float, default=0.65)
+    parser.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="Show activation decisions and scores without loading instructions",
+    )
+    parser.add_argument(
+        "--show-terms",
+        action="store_true",
+        help="Include query-derived matching terms in diagnostics",
+    )
+    add_query_plan_arguments(parser)
     args = parser.parse_args()
+    if args.show_terms and not args.diagnostics:
+        parser.error("--show-terms requires --diagnostics")
+    try:
+        query_settings = query_plan_settings_from_arguments(args)
+        policy = RouterPolicy(
+            enabled=not args.legacy_routing,
+            min_semantic_score=args.min_semantic_score,
+            min_combined_score=args.min_combined_score,
+            semantic_only_score=args.semantic_only_score,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
 
     # Build the catalog and search index from the local repository.
     registry = SkillRegistry(args.repo)
-    router = SkillRouter(registry, model_path=args.model_path, semantic_weight=args.semantic_weight, name_boost=args.name_boost, )
+    router = SkillRouter(
+        registry,
+        model_path=args.model_path,
+        semantic_weight=args.semantic_weight,
+        name_boost=args.name_boost,
+        activation_policy=policy,
+        selection_policy=RouterSelectionPolicy(enabled=not args.legacy_selection),
+        query_plan_settings=query_settings,
+    )
 
     print(f"Indexed {len(registry.skills)} skills.")
 
@@ -496,8 +1027,14 @@ def main():
     # the program or editing any source code.
     prompt = input("\nDescribe the task: ").strip()
 
+    selected, decision = router.route(prompt, args.top, include_terms=args.show_terms)
+    if args.diagnostics:
+        print(json.dumps(decision, indent=2))
+        if not args.load:
+            return
+
     # Retrieve and display the best matches.
-    for score, skill in router.search(prompt, args.top):
+    for score, skill in selected:
         print(f"\n{score:.3f}  {skill.name}")
         print(f"  Domain: {skill.domain}")
         print(f"  {skill.description}")
