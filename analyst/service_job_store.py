@@ -33,7 +33,7 @@ from service_contracts import (
 from service_settings import ServiceSettings
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 APPLICATION_ID = 0x43524A31
 
 _OBJECT_ID = re.compile(r"[0-9a-f]{32}")
@@ -146,6 +146,19 @@ CREATE TABLE service_preparations (
     review_expires_at TEXT
 )
 """
+
+_MEMORY_SOURCE_SCHEMA = """
+CREATE TABLE service_preparation_sources (
+    job_id TEXT NOT NULL REFERENCES service_preparations(job_id) ON DELETE CASCADE,
+    evidence_id TEXT NOT NULL CHECK(length(evidence_id) = 64),
+    conversation_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    source_hash TEXT NOT NULL CHECK(length(source_hash) = 64),
+    snapshot_version INTEGER NOT NULL CHECK(snapshot_version = 2),
+    PRIMARY KEY(job_id, evidence_id)
+)
+"""
+_MEMORY_SOURCE_INDEX = "CREATE INDEX preparation_sources_lookup ON service_preparation_sources(conversation_id, message_id, job_id)"
 
 class UnsupportedJobSchemaError(RuntimeError):
     """The file is not a supported service-job database."""
@@ -319,6 +332,11 @@ class JobStore:
                 "The migrated database has invalid references."
             )
 
+    @staticmethod
+    def _migrate_6_to_7(connection):
+        connection.execute(_MEMORY_SOURCE_SCHEMA)
+        connection.execute(_MEMORY_SOURCE_INDEX)
+
     def _initialize(self) -> None:
         with self._transaction(write=True) as connection:
             application_id = connection.execute(
@@ -348,6 +366,7 @@ class JobStore:
                 connection.execute(_REQUEST_INDEX)
                 connection.execute(_RESULT_SCHEMA)
                 connection.execute(_PREPARATION_SCHEMA)
+                self._migrate_6_to_7(connection)
                 connection.execute(
                     f"PRAGMA application_id = {APPLICATION_ID}"
                 )
@@ -360,7 +379,7 @@ class JobStore:
                     raise UnsupportedJobSchemaError(
                         "The database has an unsupported application identity."
                     )
-                if version not in (1, 2, 3, 4, 5, SCHEMA_VERSION):
+                if version not in (1, 2, 3, 4, 5, 6, SCHEMA_VERSION):
                     raise UnsupportedJobSchemaError(
                         "The database schema version is unsupported."
                     )
@@ -449,9 +468,12 @@ class JobStore:
 
                 if version == 5:
                     self._migrate_5_to_6(connection)
-                    connection.execute(
-                        f"PRAGMA user_version = {SCHEMA_VERSION}"
-                    )
+                    connection.execute("PRAGMA user_version = 6")
+                    version = 6
+
+                if version == 6:
+                    self._migrate_6_to_7(connection)
+                    connection.execute("PRAGMA user_version = 7")
 
             connection.execute(
                 """
@@ -502,6 +524,8 @@ class JobStore:
                 LIMIT 0
                 """
             )
+            connection.execute("""SELECT job_id, evidence_id, conversation_id, message_id,
+                source_hash, snapshot_version FROM service_preparation_sources LIMIT 0""")
 
     def _now(self) -> datetime:
         value = self._clock()

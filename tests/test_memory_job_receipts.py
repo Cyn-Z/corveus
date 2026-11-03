@@ -14,7 +14,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "analyst"))
 
 from memory_manager import MemoryManager
-from memory_store import ConversationNotFoundError, ExchangeConflictError, MemoryStore
+from memory_store import ConversationNotFoundError, ExchangeConflictError, MemoryStore, SCHEMA_VERSION
 from token_usage import TokenUsage
 
 
@@ -127,21 +127,29 @@ class JobReceiptTests(unittest.TestCase):
         with self.assertRaises(ConversationNotFoundError):
             self.save()
 
+    def downgrade_fixture_to_schema_three(self):
+        # Reconstruct the old schema, including removal of later derived objects.
+        with sqlite3.connect(self.path) as connection:
+            for name, in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'memory_%'"
+            ).fetchall():
+                connection.execute(f'DROP TRIGGER "{name}"')
+            for table in ('memory_index_receipts', 'memory_embeddings', 'memory_chunk_terms', 'memory_index_work',
+                          'memory_chunks', 'memory_index_state', 'job_exchange_receipts'):
+                connection.execute(f'DROP TABLE "{table}"')
+            connection.execute("PRAGMA user_version = 3")
+
     def test_schema_three_migration_preserves_historical_messages(self):
         original = self.save(job_id=None)
-        with sqlite3.connect(self.path) as connection:
-            connection.execute("DROP TABLE job_exchange_receipts")
-            connection.execute("PRAGMA user_version = 3")
+        self.downgrade_fixture_to_schema_three()
         migrated = self.open_store()
         self.assertEqual(migrated.get_messages(self.conversation.id), list(original))
         self.save(migrated)
         with sqlite3.connect(self.path) as connection:
-            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 4)
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
 
     def test_failed_migration_is_transactionally_rolled_back(self):
-        with sqlite3.connect(self.path) as connection:
-            connection.execute("DROP TABLE job_exchange_receipts")
-            connection.execute("PRAGMA user_version = 3")
+        self.downgrade_fixture_to_schema_three()
         def fail(connection):
             connection.execute("CREATE TABLE partial_receipt_migration(value TEXT)")
             raise RuntimeError("simulated migration failure")

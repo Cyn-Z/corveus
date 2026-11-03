@@ -15,10 +15,14 @@ def build_memory_manager(settings: MemorySettings) -> MemoryManager:
     This function does not create conversations, record exchanges, prune
     records, or assemble prompts.
     """
+    retrieval = {"retrieval_enabled": True} if settings.retrieval_enabled else {}
+    if settings.retrieval_enabled and settings.retrieval_token_budget == 0:
+        retrieval["indexing_enabled"] = False
     return MemoryManager(
         enabled=settings.enabled,
         database_path=settings.database_path,
         scope=settings.scope,
         retention_days=settings.retention_days,
         busy_timeout_ms=settings.busy_timeout_ms,
+        **retrieval,
     )

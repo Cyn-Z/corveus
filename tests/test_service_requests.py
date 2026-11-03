@@ -138,6 +138,7 @@ class RequestStorageTests(unittest.TestCase):
         gate = InferenceGate(self.scheduler)
         permit = gate.start(claim, reserved_bytes=10)
         with sqlite3.connect(self.path) as connection:
+            connection.execute("DROP TABLE service_preparation_sources")
             connection.execute("DROP TABLE service_preparations")
             connection.execute("DROP TABLE service_job_results")
             connection.execute("DROP TABLE service_request_content")
@@ -165,6 +166,7 @@ class RequestStorageTests(unittest.TestCase):
 
     def test_failed_content_migration_rolls_back_schema_version(self):
         with sqlite3.connect(self.path) as connection:
+            connection.execute("DROP TABLE service_preparation_sources")
             connection.execute("DROP TABLE service_preparations")
             connection.execute("DROP TABLE service_job_results")
             connection.execute("DROP TABLE service_request_content")

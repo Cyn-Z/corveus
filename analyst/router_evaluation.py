@@ -20,6 +20,9 @@ from contextlib import redirect_stdout
 from dataclasses import asdict, dataclass
 
 from orchestrator import SkillRegistry, SkillRouter
+from router_embedding_cache import (
+    add_embedding_cache_arguments, embedding_cache_settings_from_arguments,
+)
 from router_policy import RouterPolicy, RouterSelectionPolicy
 from router_query_plan import (
     add_query_plan_arguments,
@@ -323,11 +326,12 @@ def fingerprint_model(model_path):
     return digest.hexdigest()
 
 
-def benchmark_startup(repo, model_path, *, runs):
+def benchmark_startup(repo, model_path, *, runs, probe_arguments=()):
     """Fresh Python processes; filesystem page caches are not flushed."""
     if type(runs) is not int or runs < 1:
         raise ValueError("startup runs must be positive")
     samples = []
+    details = []
     for _ in range(runs):
         result = subprocess.run(
             [
@@ -339,6 +343,7 @@ def benchmark_startup(repo, model_path, *, runs):
                 "--model-path",
                 str(model_path),
                 "--startup-probe",
+                *probe_arguments,
             ],
             check=True,
             capture_output=True,
@@ -350,14 +355,21 @@ def benchmark_startup(repo, model_path, *, runs):
                 "HF_HUB_DISABLE_TELEMETRY": "1",
             },
         )
-        samples.append(json.loads(result.stdout)["startup_seconds"])
+        detail = json.loads(result.stdout)
+        samples.append(detail["startup_seconds"])
+        details.append(detail)
     return {
         **latency_summary(samples),
+        "sample_details": details,
+        "probe_arguments": list(probe_arguments),
         "scope": "fresh_process_registry_and_router_initialization; excludes interpreter launch; OS caches uncontrolled",
     }
 
 
-def benchmark_router(router, cases, *, limit=5, repeats=5, warmup=1):
+def benchmark_router(router, cases, *, limit=5, repeats=5, warmup=1, mode="route"):
+    if mode not in {"route", "search"}:
+        raise ValueError("mode must be route or search")
+    route = getattr(router, mode)
     if any(
         type(value) is not int or value < minimum
         for value, minimum in ((repeats, 1), (warmup, 0), (limit, 1))
@@ -369,14 +381,15 @@ def benchmark_router(router, cases, *, limit=5, repeats=5, warmup=1):
     rows = []
     for case in cases:
         for _ in range(warmup):
-            router.route(case.prompt, limit=limit)
+            route(case.prompt, limit=limit)
         times = []
         for _ in range(repeats):
             start = time.perf_counter()
-            router.route(case.prompt, limit=limit)
+            route(case.prompt, limit=limit)
             times.append(time.perf_counter() - start)
         rows.append({"case_id": case.id, **latency_summary(times)})
     return {
+        "interface": mode,
         "warmup_per_case": warmup,
         "repeats_per_case": repeats,
         "cases": rows,
@@ -417,8 +430,9 @@ def evaluate_router(
                 raise ValueError(f"Invalid redundancy group for {case.id}")
     rows = []
     for case in cases:
-        # search() delegates to route(); share that actual activation path so
-        # bypassed prompts do not encode and other queries encode only once.
+        # Query counts include actual task-clause and long-request view encodes.
+        calls_before = dict(router.embedding_calls) if hasattr(router, "embedding_calls") else None
+        # Use the same applicability and selection path as production search().
         if hasattr(router, "route"):
             selected, decision = router.route(
                 case.prompt, limit=limit, include_terms=include_text
@@ -452,6 +466,11 @@ def evaluate_router(
                 decision.get("query_plan") if hasattr(router, "route") else None
             ),
         }
+        if calls_before is not None:
+            row["embedding_calls"] = {
+                key: router.embedding_calls[key] - calls_before[key]
+                for key in calls_before
+            }
         relevant = (
             set().union(*map(set, case.required_groups))
             if case.required_groups
@@ -521,7 +540,7 @@ def evaluate_router(
     ).hexdigest()
 
     return {
-        "evaluation_version": 4,
+        "evaluation_version": 5,
         "cases_sha256": hashlib.sha256(
             json.dumps([asdict(case) for case in cases], sort_keys=True).encode()
         ).hexdigest(),
@@ -587,6 +606,25 @@ def evaluate_router(
     }
 
 
+def startup_probe_arguments(args):
+    """Forward all effective router settings; probes never recursively benchmark."""
+    values = ("top", "semantic_weight", "name_boost", "redundancy_similarity",
+              "relative_score_floor", "novelty_weight", "min_semantic_score",
+              "min_combined_score", "semantic_only_score", "query_chunk_tokens",
+              "query_overlap_tokens", "query_max_views", "query_max_directive_views",
+              "query_max_prompt_characters", "embedding_cache_dir")
+    result = []
+    for name in values:
+        value = getattr(args, name)
+        if value is not None:
+            result.extend(("--" + name.replace("_", "-"), str(value)))
+    for name in ("legacy_routing", "legacy_selection", "disable_long_requests",
+                 "disable_embedding_cache"):
+        if getattr(args, name):
+            result.append("--" + name.replace("_", "-"))
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", required=True)
@@ -610,12 +648,14 @@ def main():
     )
     parser.add_argument("--split", choices=tuple(SPLITS), default="baseline")
     parser.add_argument("--benchmark", action="store_true")
+    parser.add_argument("--benchmark-interface", choices=("route", "search"), default="route")
     parser.add_argument("--cold-runs", type=int, default=3)
     parser.add_argument("--startup-probe", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--measure-instructions", action="store_true")
     add_query_plan_arguments(parser)
+    add_embedding_cache_arguments(parser)
     args = parser.parse_args()
     if args.repeats < 1 or args.warmup < 0 or args.cold_runs < 1:
         parser.error("repeats must be positive and warmup nonnegative")
@@ -627,6 +667,7 @@ def main():
         parser.error("--name-boost must be finite and nonnegative")
     try:
         query_settings = query_plan_settings_from_arguments(args)
+        cache_settings = embedding_cache_settings_from_arguments(args)
         selection = RouterSelectionPolicy(
             not args.legacy_selection,
             args.redundancy_similarity,
@@ -660,13 +701,16 @@ def main():
             activation_policy=policy,
             selection_policy=selection,
             query_plan_settings=query_settings,
+            embedding_cache_settings=cache_settings,
         )
         startup_seconds = time.perf_counter() - start
         if args.startup_probe:
             # The stdout redirect remains active here; write the probe to
             # original stdout so the parent receives exactly one JSON object.
             sys.__stdout__.write(
-                json.dumps({"startup_seconds": startup_seconds}) + "\n"
+                json.dumps({"startup_seconds": startup_seconds,
+                            "embedding_cache": router.embedding_cache_report,
+                            "embedding_calls": dict(router.embedding_calls)}) + "\n"
             )
             return
         report = evaluate_router(
@@ -676,6 +720,8 @@ def main():
             include_text=args.show_text,
             measure_instructions=args.measure_instructions,
         )
+        report["embedding_cache"] = router.embedding_cache_report
+        report["embedding_calls"] = dict(router.embedding_calls)
         report["split"] = args.split
         report["model_sha256"] = fingerprint_model(args.model_path)
         tokenizer = router.model.tokenizer
@@ -701,10 +747,12 @@ def main():
         }
         if args.benchmark:
             report["cold_startup"] = benchmark_startup(
-                args.repo, args.model_path, runs=args.cold_runs
+                args.repo, args.model_path, runs=args.cold_runs,
+                probe_arguments=startup_probe_arguments(args),
             )
             report["benchmark"] = benchmark_router(
-                router, cases, limit=args.top, repeats=args.repeats, warmup=args.warmup
+                router, cases, limit=args.top, repeats=args.repeats, warmup=args.warmup,
+                mode=args.benchmark_interface,
             )
     print(json.dumps(report, indent=2, allow_nan=False))
 

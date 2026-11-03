@@ -8,6 +8,7 @@
 .codex
 .release-backups/
 READMEE.md
+.agents/
 # Downloaded models
 models/
 

@@ -16,6 +16,7 @@ from service_contracts import ExecutionProfile, HardwareTarget
 from service_runtime import build_local_service
 from service_settings import load_service_settings
 from service_health import WorkerHealth
+from retrieval_embeddings import local_query_embeddings
 
 
 def unavailable(*args, **kwargs):
@@ -71,6 +72,13 @@ def build_runtime(role):
         router = analyst.SKILL_ROUTER
         registry = analyst.SKILL_REGISTRY
         call_llm = analyst.call_llm
+        if (analyst.settings.memory.enabled and analyst.settings.memory.retrieval_enabled
+                and analyst.settings.memory.retrieval_token_budget > 0):
+            # Worker concurrency is one: routing and memory query encoding occur
+            # sequentially against this existing local CPU model, never the skill cache.
+            embeddings = local_query_embeddings(router.model, analyst.settings.minilm_model_path)
+            analyst.MEMORY_MANAGER.bind_retrieval_embeddings(embeddings)
+            analyst.MEMORY_MANAGER.start_indexing(embeddings)
     else:
         # API review can recount saved instructions, but cannot reroute
         # prompts or dispatch generation.
@@ -84,6 +92,7 @@ def build_runtime(role):
         analyst.count_input_tokens,
         profile,
         top_k=analyst.settings.router_top_k,
+        memory_token_budget=analyst.settings.memory.retrieval_token_budget,
     )
     runtime = build_local_service(
         database_path,
@@ -116,12 +125,16 @@ def serve_api(runtime, stop):
 def serve_worker(runtime, memory, stop):
     next_cleanup = 0.0
     while not stop.is_set():
-        runtime.worker.run_once(stop)
+        status = runtime.worker.run_once(stop)
+        if status is None and not stop.is_set():
+            # Generation has priority. One bounded indexing item per idle pass.
+            memory.indexing_step()
 
         now = time.monotonic()
         if now >= next_cleanup:
             runtime.worker.preparation.requests.prune_expired()
             memory.prune_expired_conversations()
+            runtime.worker.preparation.prune_invalid_memory()
             next_cleanup = now + 60
 
         stop.wait(1)

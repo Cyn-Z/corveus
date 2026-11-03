@@ -202,6 +202,7 @@ class ResultTests(unittest.TestCase):
     def test_schema_four_migration_preserves_existing_prompt_and_hold(self):
         admitted, _, permit = self.running()
         with sqlite3.connect(self.path) as connection:
+            connection.execute("DROP TABLE service_preparation_sources")
             connection.execute("DROP TABLE service_preparations")
             connection.execute("DROP TABLE service_job_results")
             connection.execute("PRAGMA user_version = 4")

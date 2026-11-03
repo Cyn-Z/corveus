@@ -27,6 +27,16 @@ class OrchestratorHandler(BaseHTTPRequestHandler):
             api = getattr(getattr(self, "server", None), "job_api", None)
             self.send_json(200, {"enabled": isinstance(api, LocalJobAPI)})
             return
+        if self.path == "/v1/memory/status":
+            api = getattr(getattr(self, "server", None), "job_api", None)
+            if not isinstance(api, LocalJobAPI):
+                self.send_json(503, {"error": "Memory status unavailable."})
+                return
+            try:
+                self.send_json(200, {"memory": api.memory_status()})
+            except Exception:
+                self.send_json(503, {"error": "Memory status unavailable."})
+            return
         if self._handle_job_request("GET"):
             return
         if self.path == "/v1/status":

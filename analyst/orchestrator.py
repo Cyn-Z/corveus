@@ -16,6 +16,11 @@ from router_query_plan import (
     query_plan_settings_from_arguments,
 )
 from router_long_requests import route_long_request
+from retrieval_lexical import tokenize
+from router_embedding_cache import (
+    CatalogEmbeddingCache, EmbeddingCacheSettings, ENCODE_SETTINGS,
+    add_embedding_cache_arguments, embedding_cache_settings_from_arguments,
+)
 
 
 @dataclass(frozen=True)
@@ -32,88 +37,6 @@ class Skill:
     domain: str
     path: str
     tokens: tuple[str, ...]
-
-
-def tokenize(text: str) -> list[str]:
-    STOP_WORDS = {
-        # Articles
-        "a",
-        "an",
-        "the",
-        # Pronouns
-        "i",
-        "me",
-        "my",
-        "myself",
-        "you",
-        "your",
-        "yourself",
-        "he",
-        "him",
-        "his",
-        "she",
-        "her",
-        "hers",
-        "we",
-        "us",
-        "our",
-        "ours",
-        "they",
-        "them",
-        "their",
-        "theirs",
-        "it",
-        "its",
-        # Auxiliary verbs and conversational filler
-        "am",
-        "are",
-        "be",
-        "been",
-        "being",
-        "did",
-        "do",
-        "does",
-        "had",
-        "has",
-        "have",
-        "is",
-        "was",
-        "were",
-        "will",
-        "would",
-        "could",
-        "should",
-        "please",
-        # Common question words
-        "how",
-        "what",
-        "when",
-        "where",
-        "who",
-        "why",
-        # Common connectors
-        "and",
-        "but",
-        "or",
-        "if",
-        "so",
-        "the",
-        "than",
-        "then",
-        # Common prepositions
-        "at",
-        "in",
-        "of",
-        "on",
-        "to",
-        # Generic request language
-        "tell",
-        "please",
-        "really",
-        "just",
-    }
-    tokens = re.findall(r"[a-z0-9]+", text.lower())
-    return [token for token in tokens if token not in STOP_WORDS]
 
 
 class SkillRegistry:
@@ -319,6 +242,7 @@ class SkillRouter:
         activation_policy: RouterPolicy | None = None,
         selection_policy: RouterSelectionPolicy | None = None,
         query_plan_settings: QueryPlanSettings | None = None,
+        embedding_cache_settings: EmbeddingCacheSettings | None = None,
     ):
         self.registry = registry
         self.semantic_weight = semantic_weight
@@ -399,34 +323,33 @@ class SkillRouter:
             for skill in registry.skills
         ]
 
-        # Precompute normalized skill embeddings once at startup.
-        # Keep the public tuple vectors for diagnostics/regression callers.
-        if self.skill_texts:
-            encoded = self.model.encode(
-                self.skill_texts,
-                batch_size=32,
-                convert_to_numpy=True,
-                normalize_embeddings=True,
-                show_progress_bar=False,
-            )
-            self.skill_embeddings = [
-                tuple(float(value) for value in vector) for vector in encoded
-            ]
-        else:
-            self.skill_embeddings = []
+        self.embedding_calls = {"catalog": 0, "query": 0}
 
-        # NumPy is already a dependency of the local embedding stack. Float64
-        # preserves the precision of the former Python-float dot products.
-        import numpy as np
+        def build_catalog():
+            self.embedding_calls["catalog"] += 1
+            return self.model.encode(self.skill_texts, **ENCODE_SETTINGS)
 
-        self.embedding_matrix = np.asarray(self.skill_embeddings, dtype=np.float64)
-        if self.skill_embeddings:
-            self.embedding_matrix.setflags(write=False)
-
+        cache = CatalogEmbeddingCache(
+            embedding_cache_settings
+            if embedding_cache_settings is not None
+            else EmbeddingCacheSettings()
+        )
+        self.embedding_matrix, self.embedding_cache_report = cache.load_or_build(
+            model=self.model,
+            model_path=model_path,
+            names=[skill.name for skill in registry.skills],
+            texts=self.skill_texts,
+            build=build_catalog,
+        )
+        # Retain the diagnostic/regression interface and existing float64 math.
+        self.skill_embeddings = [
+            tuple(float(value) for value in vector)
+            for vector in self.embedding_matrix
+        ]
         print(
-            f"Hybrid router initialized: "
-            f"{len(registry.skills)} skills indexed; "
-            f"MiniLM embeddings cached.",
+            f"Hybrid router initialized: {len(registry.skills)} skills indexed; "
+            f"catalog embedding cache={self.embedding_cache_report['status']}; "
+            f"catalog encode calls={self.embedding_calls['catalog']}.",
             flush=True,
         )
 
@@ -820,7 +743,8 @@ class SkillRouter:
         if limit <= 0 or not self.registry.skills:
             return []
 
-        # Encode the user's request once.
+        # Count actual query encode invocations, including task clauses/views.
+        self.embedding_calls["query"] += 1
         query_vector = self.model.encode(
             prompt,
             convert_to_numpy=True,
@@ -995,11 +919,13 @@ def main():
         help="Include query-derived matching terms in diagnostics",
     )
     add_query_plan_arguments(parser)
+    add_embedding_cache_arguments(parser)
     args = parser.parse_args()
     if args.show_terms and not args.diagnostics:
         parser.error("--show-terms requires --diagnostics")
     try:
         query_settings = query_plan_settings_from_arguments(args)
+        cache_settings = embedding_cache_settings_from_arguments(args)
         policy = RouterPolicy(
             enabled=not args.legacy_routing,
             min_semantic_score=args.min_semantic_score,
@@ -1019,6 +945,7 @@ def main():
         activation_policy=policy,
         selection_policy=RouterSelectionPolicy(enabled=not args.legacy_selection),
         query_plan_settings=query_settings,
+        embedding_cache_settings=cache_settings,
     )
 
     print(f"Indexed {len(registry.skills)} skills.")

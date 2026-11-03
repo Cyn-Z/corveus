@@ -236,6 +236,7 @@ class PreparationTests(unittest.TestCase):
         self.preparation.prepare(claim)
         held = gate.start(claim, reserved_bytes=10)
         with sqlite3.connect(self.path) as connection:
+            connection.execute("DROP TABLE service_preparation_sources")
             connection.execute("DROP TABLE service_preparations")
             connection.execute("PRAGMA user_version = 5")
         migrated = JobStore(self.path, self.settings, clock=lambda: self.now)
@@ -250,6 +251,7 @@ class PreparationTests(unittest.TestCase):
     def test_failed_schema_six_migration_rolls_back_all_existing_data(self):
         original = self.submit()
         with sqlite3.connect(self.path) as connection:
+            connection.execute("DROP TABLE service_preparation_sources")
             connection.execute("DROP TABLE service_preparations")
             connection.execute("PRAGMA user_version = 5")
         with patch("service_job_store._PREPARATION_SCHEMA", "INVALID SQL"):

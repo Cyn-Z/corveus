@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 from token_usage import TokenUsage, summarize_usage
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 6
 DEFAULT_CONVERSATION_TITLE = "Untitled conversation"
 MAX_CONVERSATION_TITLE_LENGTH = 120
 
@@ -215,6 +215,18 @@ class MemoryStore:
                 connection.execute("PRAGMA user_version = 4")
                 version = 4
 
+            if version == 4:
+                from memory_retrieval_store import migrate_4_to_5
+                migrate_4_to_5(connection)
+                connection.execute("PRAGMA user_version = 5")
+                version = 5
+
+            if version == 5:
+                from memory_indexer import migrate_5_to_6
+                migrate_5_to_6(connection)
+                connection.execute("PRAGMA user_version = 6")
+                version = 6
+
             if version != SCHEMA_VERSION:
                 raise UnsupportedSchemaError(
                     f"No migration path from schema {version}."
@@ -370,6 +382,7 @@ class MemoryStore:
         assistant_content: str,
         usage: TokenUsage | None = None,
         job_id: str | None = None,
+        enqueue_index: bool = False,
     ) -> tuple[Message, Message]:
         """Atomically save a completed exchange and optional job receipt.
 
@@ -382,6 +395,8 @@ class MemoryStore:
         Job IDs must come from trusted service code. They are identifiers,
         not authorization credentials.
         """
+        if type(enqueue_index) is not bool:
+            raise ValueError("enqueue_index must be boolean.")
         _nonempty_string(user_content, "user_content")
         _nonempty_string(assistant_content, "assistant_content")
         if usage is not None and not isinstance(usage, TokenUsage):
@@ -565,6 +580,10 @@ class MemoryStore:
                 """,
                 (now, conversation_id, self.scope),
             )
+
+            if enqueue_index:
+                from memory_indexer import enqueue_saved_messages
+                enqueue_saved_messages(connection, self.scope, (user, assistant))
 
         return user, assistant
 

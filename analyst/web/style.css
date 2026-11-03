@@ -490,3 +490,18 @@ body.black-theme #chat-box:empty::before { filter: grayscale(1); }
 body.black-theme .mode-badge[data-mode="saved"] { color: var(--text); border-color: var(--border-focus); }
 body.black-theme .saved-mode-indicator { color: var(--text); }
 body.black-theme .message.user strong { color: var(--text); }
+
+/* Saved-memory visibility uses the same theme tokens as the workspace. */
+.memory-mode-badge { color: var(--text-muted); font-size: 11px; border: 1px solid var(--border); border-radius: 20px; padding: 2px 8px; }
+.memory-mode-badge[data-state="ready"] { color: var(--accent); }
+.memory-card-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.memory-card-heading h2 { margin-bottom: 0; }
+.memory-card #memory-refresh { color: var(--text); background: var(--surface); font-size: 11px; min-height: 30px; }
+.memory-card progress { width: 100%; height: 8px; accent-color: var(--accent); }
+.memory-sources { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 10px; font-size: 12px; color: var(--text-muted); }
+.memory-sources summary { cursor: pointer; color: var(--accent); }
+.memory-source { margin-top: 12px; }
+.memory-source-link { color: var(--accent); background: transparent; border: 0; padding: 3px 0; text-decoration: underline; text-align: left; overflow-wrap: anywhere; }
+.memory-source-meta { display: block; font-size: 11px; }
+.memory-source blockquote { margin: 6px 0; border-left: 2px solid var(--border); padding: 4px 10px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; }
+.memory-result-state { color: var(--text-muted); font-size: 11px; margin-top: 8px; }

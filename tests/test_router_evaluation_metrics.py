@@ -1,5 +1,6 @@
 """Evaluation-only regressions; fake routers never load an embedding model."""
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -10,10 +11,22 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'analyst'))
 from orchestrator import Skill
 from router_evaluation import (RoutingCase, SPLITS, evaluate_router, latency_summary,
-                               benchmark_router, benchmark_startup, fingerprint_model)
+                               benchmark_router, benchmark_startup, fingerprint_model, startup_probe_arguments)
 
 
 class EvaluationMetricsTests(unittest.TestCase):
+    def test_comparison_subprocesses_use_a_fixed_hash_seed(self):
+        from benchmark_router_embedding_cache import subprocess_environment
+        with patch.dict(os.environ, {}, clear=True):
+            environment = subprocess_environment()
+            self.assertEqual(environment['PYTHONHASHSEED'], '0')
+            self.assertEqual(environment['HF_HUB_OFFLINE'], '1')
+            self.assertEqual(environment['TRANSFORMERS_OFFLINE'], '1')
+        with patch.dict(os.environ, {'PYTHONHASHSEED': '73'}, clear=True):
+            self.assertEqual(subprocess_environment()['PYTHONHASHSEED'], '73')
+        with patch.dict(os.environ, {'PYTHONHASHSEED': 'random'}, clear=True):
+            self.assertEqual(subprocess_environment()['PYTHONHASHSEED'], '0')
+
     def setUp(self):
         self.skills = [Skill(n, n, 'security', n, ()) for n in ('a', 'b', 'c', 'd')]
         self.router = SimpleNamespace(
@@ -81,6 +94,46 @@ class EvaluationMetricsTests(unittest.TestCase):
         self.assertEqual(result['median_ms'], 1500.)
         self.assertIn('--startup-probe', run.call_args.args[0])
         self.assertEqual(run.call_args.kwargs['env']['HF_HUB_OFFLINE'], '1')
+
+    def test_direct_search_benchmark_uses_requested_interface(self):
+        self.router.search = Mock(return_value=[])
+        result = benchmark_router(self.router, [self.case], mode='search', repeats=2, warmup=1)
+        self.assertEqual(result['interface'], 'search')
+        self.assertEqual(self.router.search.call_count, 3)
+        self.router.route.assert_not_called()
+
+    def test_startup_probes_forward_effective_settings_and_cache_mode(self):
+        arguments = SimpleNamespace(
+            top=3, semantic_weight=.4, name_boost=2., redundancy_similarity=.8,
+            relative_score_floor=.7, novelty_weight=.1, min_semantic_score=.3,
+            min_combined_score=.4, semantic_only_score=.7, query_chunk_tokens=128,
+            query_overlap_tokens=16, query_max_views=4, query_max_directive_views=1,
+            query_max_prompt_characters=10000, embedding_cache_dir='/tmp/cache-test',
+            legacy_routing=True, legacy_selection=True, disable_long_requests=True,
+            disable_embedding_cache=True,
+        )
+        forwarded = startup_probe_arguments(arguments)
+        self.assertIn('--disable-long-requests', forwarded)
+        self.assertIn('--disable-embedding-cache', forwarded)
+        self.assertEqual(forwarded[forwarded.index('--query-max-views') + 1], '4')
+        with patch('router_evaluation.subprocess.run', return_value=SimpleNamespace(
+                stdout='{"startup_seconds": 1.0, "embedding_calls": {"catalog": 0, "query": 0}}')) as run:
+            result = benchmark_startup('repo', 'model', runs=1, probe_arguments=forwarded)
+        command = run.call_args.args[0]
+        self.assertEqual(command[-len(forwarded):], forwarded)
+        self.assertEqual(result['sample_details'][0]['embedding_calls']['catalog'], 0)
+
+    def test_actual_query_calls_reported_per_case(self):
+        self.router.embedding_calls = {'catalog': 1, 'query': 0}
+        original_route = self.router.route
+
+        def route(*args, **kwargs):
+            self.router.embedding_calls['query'] += 3
+            return original_route(*args, **kwargs)
+
+        self.router.route = route
+        result = evaluate_router(self.router, [self.case])
+        self.assertEqual(result['cases'][0]['embedding_calls'], {'catalog': 0, 'query': 3})
 
     def test_fingerprint_changes_for_model_bytes_and_tokenizer_settings(self):
         with tempfile.TemporaryDirectory() as root:

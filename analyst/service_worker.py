@@ -178,6 +178,11 @@ class JobWorker:
                         # generate_answer classifies all callback errors as
                         # uncertain; dispatched remains False for this case.
                         raise ServiceError(ErrorCode.CONFLICT)
+                    self.preparation.validate_for_dispatch(live, snapshot)
+                    # Validation can involve SQLite I/O; recheck lease/cancellation.
+                    live = renewal.check()
+                    if stop.is_set() or live.status.cancel_requested:
+                        raise ServiceError(ErrorCode.CONFLICT)
                     dispatched = True
                     response = self.call_llm(messages)
                     stopped = True

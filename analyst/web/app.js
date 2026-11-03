@@ -12,6 +12,10 @@ let activeConversationTitle = "";
 let saveWarning = false;
 let hasUnrecordedRequest = false;
 let memoryAvailable = null;
+let recallStatus = null;
+let recallModeSaved = null;
+let recallEpoch = 0;
+let recallRefreshing = false;
 let historyLoaded = false;
 let historyError = "";
 let dialogAction = null;
@@ -116,6 +120,14 @@ function updateConversationControls() {
     }
 
     const incognito = !conversationEnabled.checked;
+    if (recallModeSaved !== !incognito) {
+        recallModeSaved = !incognito;
+        recallEpoch += 1;
+        recallStatus = null;
+        if (!incognito) void refreshMemoryStatus();
+    }
+    renderMemoryStatus();
+    for (const link of chatBox.querySelectorAll(".memory-source-link")) link.disabled = locked();
     const savedDark = !incognito && savedDarkTheme.checked;
     document.body.classList.toggle("incognito", incognito);
     document.body.classList.toggle("black-theme", incognito || savedDark);
@@ -135,7 +147,7 @@ function updateConversationControls() {
         : incognito ? "incognito" : "saved";
 
     sessionDescription.textContent = activeConversationId !== null
-        ? "New Exchanges Are Saved. Earlier Messages Are Not Used for Model Recall Yet."
+        ? "New exchanges are saved. Relevant saved history may be used when recall is enabled."
         : incognito
             ? "Exchanges Are Not Saved to Conversation History."
             : "Choose a Conversation Name Before Sending Your First Message.";
@@ -399,7 +411,7 @@ async function openConversation(id) {
             addMessage(message.role, message.role === "user" ? "Analyst" : "Corveus", message.content);
         }
         renderConversationList();
-        setConversationNotice("Opened “" + conversation.title + "”. Showing Up to 50 Recent Exchanges. History Recall Is Not Enabled.");
+        setConversationNotice("Opened “" + conversation.title + "”. Showing up to 50 recent exchanges. See Saved Memory for recall status.");
         if (narrowLayout.matches) setConversationSidebarVisible(false);
         input.focus();
     }, "Opening Conversation…");
@@ -662,7 +674,8 @@ function handleResponse(data) {
     const reply = data.choices?.[0]?.message?.content;
     if (typeof reply !== "string" || !reply.trim()) throw new Error("The Server Returned No Assistant Response.");
     updateStats(data.stats);
-    addMessage("assistant", "Corveus", reply);
+    const answer = addMessage("assistant", "Corveus", reply);
+    renderMemorySources(answer, data.memory);
     recordResponseUsage(data);
     if (activeConversationId !== null) {
         if (data.conversation_id !== activeConversationId || data.memory_persistence?.saved !== true) {
@@ -1113,6 +1126,7 @@ async function displayDurableResult(data) {
     }
     handleResponse({
         choices: [{ message: { content: data.answer } }],
+        memory: data.memory,
         stats: usage ? {
             ...usage,
             ctx_size: usage.context_size,
@@ -1245,4 +1259,137 @@ async function runDurableAction(action) {
             input.focus();
         }
     }
+}
+
+
+function renderMemoryStatus() {
+    const badge = document.getElementById("memory-mode-badge");
+    const state = document.getElementById("memory-state");
+    const detail = document.getElementById("memory-index-detail");
+    const progress = document.getElementById("memory-progress");
+    const incognito = !conversationEnabled.checked;
+    progress.hidden = true;
+    document.getElementById("memory-refresh").disabled = incognito || isSending || recallRefreshing;
+    if (incognito) {
+        badge.textContent = "Recall · Off in Incognito";
+        badge.dataset.state = "disabled";
+        if (state.textContent !== "Saved recall is off in Incognito") state.textContent = "Saved recall is off in Incognito";
+        detail.textContent = "Saved history is neither read nor saved. Temporary job retention still applies.";
+        return;
+    }
+    const mode = recallStatus?.state || "unavailable";
+    const labels = {
+        ready: ["Ready", "Saved memory is ready"],
+        indexing: ["Indexing", "Saved history is being indexed"],
+        needs_attention: ["Partial", "Some history could not be indexed"],
+        waiting: ["Waiting", "Waiting for the indexing worker"],
+        disabled: ["Off", "Saved recall is off on this server"],
+        paused: ["Paused", "Saved recall is paused by server configuration"],
+        unavailable: ["Unavailable", "Memory status unavailable"]
+    };
+    const label = labels[mode] || labels.unavailable;
+    badge.textContent = "Recall · " + label[0];
+    badge.dataset.state = mode;
+    if (state.textContent !== label[1]) state.textContent = label[1];
+    detail.textContent = ["indexing", "waiting"].includes(mode)
+        ? "History is indexed between requests. Recall may be incomplete until the worker catches up."
+        : mode === "needs_attention" ? "Recall may be incomplete. Refresh to check for updates."
+        : mode === "disabled" || mode === "paused" ? "Saving conversations is separate from enabling recall."
+        : mode === "ready" ? "Relevant excerpts can be selected across your saved conversations."
+        : "Recall availability could not be checked. Saving and model status are shown separately.";
+    const total = recallStatus?.total_messages;
+    const indexed = recallStatus?.indexed_messages;
+    if (["ready", "indexing", "needs_attention"].includes(mode) && Number.isSafeInteger(total) &&
+        Number.isSafeInteger(indexed) && total >= 0 && indexed >= 0 && indexed <= total) {
+        progress.hidden = total === 0;
+        progress.value = total ? Math.round(100 * indexed / total) : 100;
+        progress.setAttribute("aria-valuetext", `${indexed} of ${total} saved messages indexed`);
+        detail.textContent = `${indexed} of ${total} saved messages indexed. ` + detail.textContent;
+        if (total === 0) detail.textContent = "No saved messages yet. New saved exchanges are indexed between requests.";
+        if (mode === "needs_attention" && Number.isSafeInteger(recallStatus.failed)) {
+            detail.textContent += ` ${recallStatus.failed} messages need attention.`;
+        }
+    }
+}
+
+async function refreshMemoryStatus() {
+    if (!conversationEnabled.checked || isSending || recallRefreshing) {
+        renderMemoryStatus();
+        return;
+    }
+    const epoch = recallEpoch;
+    recallRefreshing = true;
+    renderMemoryStatus();
+    try {
+        const response = await fetch("/v1/memory/status", { cache: "no-store",
+            ...(typeof AbortSignal !== "undefined" ? { signal: AbortSignal.timeout(5000) } : {}) });
+        if (!response.ok) throw new Error("Memory status unavailable");
+        const data = await response.json();
+        if (epoch === recallEpoch && conversationEnabled.checked) {
+            recallStatus = data.memory && typeof data.memory.state === "string" ? data.memory : null;
+        }
+    } catch {
+        if (epoch === recallEpoch) recallStatus = null;
+    } finally {
+        recallRefreshing = false;
+        renderMemoryStatus();
+    }
+}
+
+function renderMemorySources(answer, memory) {
+    if (!memory || typeof memory.state !== "string") return;
+    if (memory.state !== "used" || !Array.isArray(memory.sources) || !memory.sources.length) {
+        const note = document.createElement("p");
+        note.className = "memory-result-state";
+        note.textContent = memory.state === "incognito" ? "Incognito · no saved memory used"
+            : memory.state === "none" ? "No saved memory was added to this answer"
+            : "Memory source details are unavailable or no longer accessible";
+        answer.appendChild(note);
+        return;
+    }
+    const details = document.createElement("details");
+    details.className = "memory-sources";
+    const summary = document.createElement("summary");
+    summary.textContent = `Saved memory used · ${memory.sources.length} excerpts`;
+    const note = document.createElement("p");
+    note.textContent = "These historical excerpts were added to this answer’s input. They may be incomplete or outdated.";
+    details.append(summary, note);
+    for (const source of memory.sources.slice(0, 32)) {
+        if (typeof source.conversation_id !== "string" || !/^[0-9a-f]{32}$/.test(source.conversation_id) ||
+            typeof source.title !== "string" || typeof source.excerpt !== "string") continue;
+        const row = document.createElement("div");
+        row.className = "memory-source";
+        const link = document.createElement("button");
+        link.type = "button";
+        link.className = "memory-source-link";
+        link.textContent = source.title;
+        link.setAttribute("aria-label", "Open source conversation: " + source.title);
+        link.addEventListener("click", () => openConversation(source.conversation_id));
+        const meta = document.createElement("span");
+        meta.className = "memory-source-meta";
+        const date = typeof source.created_at === "string" && !Number.isNaN(Date.parse(source.created_at))
+            ? new Date(source.created_at).toLocaleString() : "Date unavailable";
+        meta.textContent = (source.role === "user" ? "Your note" : "Earlier assistant answer") + " · " + date;
+        const excerpt = document.createElement("blockquote");
+        excerpt.textContent = source.excerpt + (source.truncated ? "…" : "");
+        row.append(link, meta, excerpt);
+        details.appendChild(row);
+    }
+    answer.appendChild(details);
+}
+
+document.getElementById("memory-refresh").addEventListener("click", refreshMemoryStatus);
+document.getElementById("memory-navigation").addEventListener("click", () => {
+    const inspector = document.getElementById("workspace-inspector");
+    if (narrowLayout.matches && !conversationPanel.hidden) setConversationSidebarVisible(false, false);
+    if (window.matchMedia("(max-width: 1100px)").matches && !inspector.open) inspector.showModal();
+    document.getElementById("memory-card").focus();
+    void refreshMemoryStatus();
+});
+if (typeof window.setTimeout === "function") {
+    const pollMemory = async () => {
+        await refreshMemoryStatus();
+        window.setTimeout(pollMemory, 15000);
+    };
+    window.setTimeout(pollMemory, 15000);
 }

@@ -177,6 +177,8 @@ async function harness({ narrow = false, disabled = false, incognito = false, re
             const overridden = await h.override(call);
             if (overridden) return overridden;
         }
+        if (url === "/v1/memory/status") return response({ memory: { enabled: !disabled,
+            state: disabled ? "disabled" : "ready", indexed_messages: 4, total_messages: 4, failed: 0 } });
         if (url.includes("?limit=")) return disabled ? response({ error: "Disabled" }, 409) : response({ conversations: Array.from(database.values()) });
         if (url === "/v1/conversations" && call.method === "POST") {
             const item = record(C, call.body.title);
@@ -888,4 +890,80 @@ test("inspector marks save failures and keeps committed totals", async () => {
     assert.match(h.get("inspector-saving-state").textContent, /Save Warning/);
     assert.equal(h.get("inspector-usage-total").textContent, "250 Total Tokens");
     assert.match(h.get("inspector-usage-coverage").textContent, /Not Saved/);
+});
+
+
+test("saved memory status shows progress and incognito skips status requests", async () => {
+    const h = await harness();
+    assert.match(h.get("memory-state").textContent, /ready/);
+    assert.match(h.get("memory-index-detail").textContent, /4 of 4/);
+    h.function("startIndependentConversation");
+    const before = h.calls.length;
+    await h.function("refreshMemoryStatus");
+    assert.equal(h.calls.length, before);
+    assert.match(h.get("memory-mode-badge").textContent, /Off in Incognito/);
+    assert.equal(h.get("memory-progress").hidden, true);
+});
+
+test("memory status distinguishes partial indexes and unavailable checks", async () => {
+    const h = await harness();
+    h.override = (call) => call.url === "/v1/memory/status" ? response({ memory: {
+        enabled: true, state: "needs_attention", total_messages: 10, indexed_messages: 6, failed: 2
+    } }) : null;
+    await h.function("refreshMemoryStatus");
+    assert.match(h.get("memory-index-detail").textContent, /6 of 10/);
+    assert.match(h.get("memory-state").textContent, /could not be indexed/);
+    h.override = (call) => call.url === "/v1/memory/status" ? response({ error: "offline" }, 503) : null;
+    await h.function("refreshMemoryStatus");
+    assert.match(h.get("memory-state").textContent, /unavailable/);
+    assert.equal(h.get("memory-progress").hidden, true);
+});
+
+test("memory excerpts and titles render as text and source links open owned history", async () => {
+    const h = await harness();
+    const answer = h.function("addMessage", "assistant", "Corveus", "Answer");
+    const hostile = '<img src=x onerror="alert(1)">';
+    h.function("renderMemorySources", answer, { state: "used", sources: [{
+        conversation_id: A, title: hostile, excerpt: hostile, role: "user",
+        created_at: "2026-10-29T00:00:00Z", truncated: false
+    }] });
+    assert.equal(answer.querySelector("blockquote").textContent, hostile);
+    assert.equal(answer.querySelector(".memory-source-link").textContent, hostile);
+    await answer.querySelector(".memory-source-link").click();
+    assert.equal(h.run("activeConversationId"), A);
+});
+
+test("incognito and expired source metadata do not imply saved recall", async () => {
+    const h = await harness({ incognito: true });
+    const answer = h.function("addMessage", "assistant", "Corveus", "Answer");
+    h.function("renderMemorySources", answer, { state: "incognito", sources: [] });
+    assert.match(answer.textContent, /no saved memory used/);
+    const expired = h.function("addMessage", "assistant", "Corveus", "Answer");
+    h.function("renderMemorySources", expired, { state: "unavailable", sources: [] });
+    assert.match(expired.textContent, /no longer accessible/);
+    assert.equal(expired.querySelector(".memory-source-link"), null);
+});
+
+
+test("a late saved-memory response cannot overwrite incognito state", async () => {
+    const h = await harness();
+    let resolveStatus;
+    h.override = (call) => call.url === "/v1/memory/status"
+        ? new Promise((resolve) => { resolveStatus = resolve; }) : null;
+    const pending = h.function("refreshMemoryStatus");
+    h.function("startIndependentConversation");
+    resolveStatus(response({ memory: { state: "ready", indexed_messages: 9, total_messages: 9 } }));
+    await pending;
+    assert.match(h.get("memory-mode-badge").textContent, /Off in Incognito/);
+    assert.equal(h.run("recallStatus"), null);
+});
+
+
+test("mobile memory navigation opens the inspector without leaving chat inert", async () => {
+    const h = await harness({ narrow: true });
+    h.function("setConversationSidebarVisible", true);
+    await h.get("memory-navigation").click();
+    assert.equal(h.get("workspace-inspector").open, true);
+    assert.equal(h.get("conversation-panel").hidden, true);
+    assert.equal(h.get("conversation-workspace").inert, false);
 });

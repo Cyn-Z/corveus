@@ -18,6 +18,7 @@ from memory_manager import MemoryManager
 from memory_store import ConversationNotFoundError
 from orchestrator import Skill, SkillRouter as RealSkillRouter
 from router_policy import RouterPolicy, RouterSelectionPolicy
+from router_embedding_cache import EmbeddingCacheSettings
 
 
 def load_module(name, filename):
@@ -64,6 +65,7 @@ class MemoryRequestTests(unittest.TestCase):
             router_policy=None,
             router_selection=RouterSelectionPolicy(),
             router_query_plan=QueryPlanSettings(enabled=False),
+            router_embedding_cache=EmbeddingCacheSettings(enabled=False),
             token_count_timeout_seconds=30,
         )
 

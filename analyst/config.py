@@ -10,6 +10,7 @@ from router_policy import (
     load_selection_policy,
 )
 from router_query_plan import QueryPlanSettings, load_query_plan_settings
+from router_embedding_cache import EmbeddingCacheSettings, load_embedding_cache_settings
 
 # This is where we define the configuration settings for the application, including required environment variables and their validation.
 
@@ -69,6 +70,10 @@ class Settings:
     )
     router_query_plan: QueryPlanSettings = field(
         default_factory=load_query_plan_settings
+    )
+
+    router_embedding_cache: EmbeddingCacheSettings = field(
+        default_factory=load_embedding_cache_settings
     )
 
     @property

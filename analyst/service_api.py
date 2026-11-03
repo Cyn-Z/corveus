@@ -5,6 +5,7 @@ headers and payloads never select an owner, tenant, or execution profile.
 """
 
 from dataclasses import asdict
+import sqlite3
 
 from memory_manager import MemoryManager
 from memory_store import ConversationNotFoundError
@@ -91,9 +92,24 @@ class LocalJobAPI:
         )
         return {"job": status.public_status(self.principal)}
 
+    def memory_status(self):
+        if self.memory is None:
+            return {"enabled": False, "state": "disabled"}
+        status = self.memory.retrieval_status()
+        status["token_budget"] = None if self.preparation is None else self.preparation.preparer.memory_token_budget
+        return status
+
     def result(self, job_id):
         completed = self.results.get(self.principal, job_id)
+        memory = {"state": "incognito" if completed.status.conversation_id is None else "unavailable", "sources": []}
+        if self.preparation is not None:
+            try:
+                memory = self.preparation.memory_view(self.principal, job_id)
+            except (ServiceError, ValueError, sqlite3.Error):
+                # Optional source details must not hide an authorized completed answer.
+                pass
         return {
+            "memory": memory,
             "job": completed.status.public_status(self.principal),
             "answer": completed.snapshot.answer,
             "usage": (

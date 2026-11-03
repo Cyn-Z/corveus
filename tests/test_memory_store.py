@@ -60,7 +60,9 @@ class MemoryStoreTests(unittest.TestCase):
             }
 
         self.assertEqual(tables, {
-            "conversations", "messages", "exchange_usage", "job_exchange_receipts"
+            "conversations", "messages", "exchange_usage", "job_exchange_receipts",
+            "memory_chunks", "memory_chunk_terms", "memory_embeddings",
+            "memory_index_work", "memory_index_state", "memory_index_receipts"
         })
 
     def test_newer_schema_is_rejected(self):

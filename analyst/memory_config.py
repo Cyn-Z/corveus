@@ -15,10 +15,18 @@ class MemorySettings:
     scope: str = "local-operator"
     retention_days: int | None = None
     busy_timeout_ms: int = 5000
+    retrieval_enabled: bool = False
+    retrieval_token_budget: int = 512
 
     def __post_init__(self):
         if not isinstance(self.enabled, bool):
             raise ValueError("MEMORY_ENABLED must be a boolean.")
+
+        if type(self.retrieval_enabled) is not bool:
+            raise ValueError("MEMORY_RETRIEVAL_ENABLED must be a boolean.")
+
+        if type(self.retrieval_token_budget) is not int or self.retrieval_token_budget < 0:
+            raise ValueError("MEMORY_RETRIEVAL_TOKEN_BUDGET must be a nonnegative integer.")
 
         if not isinstance(self.database_path, Path):
             raise ValueError("MEMORY_DATABASE_PATH must be a Path.")
@@ -55,6 +63,15 @@ def load_memory_settings(
     if enabled_text not in {"true", "false"}:
         raise ValueError("MEMORY_ENABLED must be 'true' or 'false'.")
 
+    retrieval_text = values.get("MEMORY_RETRIEVAL_ENABLED", "false").strip().lower()
+    if retrieval_text not in {"true", "false"}:
+        raise ValueError("MEMORY_RETRIEVAL_ENABLED must be 'true' or 'false'.")
+
+    try:
+        retrieval_token_budget = int(values.get("MEMORY_RETRIEVAL_TOKEN_BUDGET", "512").strip())
+    except ValueError:
+        raise ValueError("MEMORY_RETRIEVAL_TOKEN_BUDGET must be a nonnegative integer.") from None
+
     path_text = values.get("MEMORY_DATABASE_PATH", "/app/data/memory.sqlite3").strip()
     if not path_text or path_text == ":memory:":
         raise ValueError(
@@ -83,4 +100,6 @@ def load_memory_settings(
         scope=scope,
         retention_days=retention_days,
         busy_timeout_ms=busy_timeout_ms,
+        retrieval_enabled=retrieval_text == "true",
+        retrieval_token_budget=retrieval_token_budget,
     )

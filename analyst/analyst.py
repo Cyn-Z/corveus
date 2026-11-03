@@ -69,6 +69,7 @@ else:
         activation_policy=settings.router_policy,
         selection_policy=settings.router_selection,
         query_plan_settings=settings.router_query_plan,
+        embedding_cache_settings=settings.router_embedding_cache,
     )
     print(
         f"Loaded {len(SKILL_REGISTRY.skills)} skill definitions.",

@@ -58,7 +58,7 @@ def build_local_service(
         return memory if principal == settings.local_principal else None
 
     results = JobResults(gate, memory_for=memory_for)
-    preparation = JobPreparation(scheduler, preparer)
+    preparation = JobPreparation(scheduler, preparer, memory_for=memory_for)
     worker = JobWorker(
         worker_id, preparation, results,
         call_llm=call_llm, reserved_bytes=reserved_bytes,
