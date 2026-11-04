@@ -15,6 +15,7 @@ from service_results import JobResults
 from service_scheduler import _identifier
 from service_preparation import JobPreparation
 from service_health import WorkerHealth
+from dfir_tools import ToolResult, TOOL_ID
 
 class LocalJobAPI:
     def __init__(
@@ -108,7 +109,7 @@ class LocalJobAPI:
             except (ServiceError, ValueError, sqlite3.Error):
                 # Optional source details must not hide an authorized completed answer.
                 pass
-        return {
+        payload = {
             "memory": memory,
             "job": completed.status.public_status(self.principal),
             "answer": completed.snapshot.answer,
@@ -118,6 +119,14 @@ class LocalJobAPI:
             ),
             "memory_persistence": completed.persistence_state,
         }
+        try:
+            tool_result = ToolResult.from_json(completed.snapshot.answer)
+            if tool_result.tool_id == TOOL_ID:
+                payload["dfir"] = tool_result.as_payload()
+        except (ValueError, TypeError, KeyError, UnicodeError):
+            pass
+        return payload
+
     def _review_preparation(self):
         if self.preparation is None:
             raise ServiceError(ErrorCode.SERVICE_UNAVAILABLE)

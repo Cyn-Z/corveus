@@ -30,11 +30,12 @@ from service_scheduler import JobScheduler, WorkerLease
 
 @dataclass(frozen=True)
 class StoredRequest:
-    """Internal content record; prompt is excluded from its representation."""
+    """Internal content record; prompt and tool request are excluded from repr."""
 
     status: JobStatus
     prompt: str = field(repr=False)
     content_expires_at: datetime
+    tool_request: object | None = field(default=None, repr=False)
 
 
 class JobRequests:
@@ -86,10 +87,15 @@ class JobRequests:
             job["job_id"],
             now,
         )
+        tool_request = None
+        if content["tool_request_json"] is not None:
+            from dfir_tools import ToolRequest
+            tool_request = ToolRequest.from_json(content["tool_request_json"])
         return StoredRequest(
             status=self.store._status(job),
             prompt=content["prompt"],
             content_expires_at=_parse_timestamp(content["expires_at"]),
+            tool_request=tool_request,
         )
 
     def get(

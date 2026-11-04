@@ -102,7 +102,10 @@ class JobPreparation:
         snapshot = self.for_worker(claim)
         if snapshot is None:
             request = self.requests.for_worker(claim)
-            snapshot = self.preparer.prepare(request.prompt)
+            if request.tool_request is not None:
+                snapshot = self.preparer._snapshot(request.prompt, [])
+            else:
+                snapshot = self.preparer.prepare(request.prompt)
             if (request.status.conversation_id is not None and not snapshot.needs_review
                     and self.preparer.memory_token_budget > 0 and self.memory_for is not None):
                 manager = self._memory(request.status.principal)

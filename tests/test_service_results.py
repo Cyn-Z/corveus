@@ -6,6 +6,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from tests.sqlite_helpers import closed_sqlite_connect
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -22,6 +23,7 @@ from service_results import JobResults, ResultSnapshot
 from service_scheduler import JobScheduler
 from service_settings import ServiceSettings
 from token_usage import TokenUsage
+from dfir_tools import ToolRequest, ToolRegistry
 
 
 class ResultTests(unittest.TestCase):
@@ -59,18 +61,33 @@ class ResultTests(unittest.TestCase):
             operation()
         self.assertEqual(caught.exception.code, code)
 
+    def test_deterministic_tool_result_can_be_captured_without_inference_permit(self):
+        admission = self.requests.submit(self.owner, JobSubmission.from_payload({
+            "prompt": "Analyze fixture",
+            "tool": {"tool_id": "sysmon_powershell_offline_v1", "input": {"fixture_id": "sysmon_powershell"}},
+        }, idempotency_key="tool"))
+        claim = self.scheduler.claim("worker-tool")
+        self.assertIsNotNone(claim)
+        claim = self.scheduler.mark_waiting(claim)
+        result = ToolRegistry().execute(ToolRequest.from_payload({
+            "tool_id": "sysmon_powershell_offline_v1", "input": {"fixture_id": "sysmon_powershell"}
+        }))
+        completed = self.results.capture_tool(claim, result)
+        self.assertEqual(completed.state, JobState.FINALIZING)
+        self.assertIsNotNone(self.results.finalize(self.owner, admission.status.job_id))
+
     def test_capture_commits_result_state_and_resource_release_together(self):
         admitted, _, _ = self.capture()
         self.assertEqual(self.store.get(self.owner, admitted.status.job_id).state, JobState.FINALIZING)
         self.assertEqual(self.gate.held_permits(), ())
-        with sqlite3.connect(self.path) as connection:
+        with closed_sqlite_connect(self.path) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM service_job_results").fetchone()[0], 1)
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM service_job_leases").fetchone()[0], 0)
         self.error(ErrorCode.CONFLICT, lambda: self.results.get(self.owner, admitted.status.job_id))
 
     def test_result_insert_failure_rolls_back_running_state_and_permit_release(self):
         admitted, _, permit = self.running()
-        with sqlite3.connect(self.path) as connection:
+        with closed_sqlite_connect(self.path) as connection:
             connection.execute("""
                 CREATE TRIGGER reject_result BEFORE INSERT ON service_job_results
                 BEGIN SELECT RAISE(ABORT, 'simulated failure'); END
@@ -96,7 +113,7 @@ class ResultTests(unittest.TestCase):
         self.store.cancel(self.owner, admitted.status.job_id, expected_version=permit.status.version)
         status = self.results.capture(permit, self.snapshot, inference_stopped=True)
         self.assertEqual(status.state, JobState.CANCELLED)
-        with sqlite3.connect(self.path) as connection:
+        with closed_sqlite_connect(self.path) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM service_job_results").fetchone()[0], 0)
 
     def test_expired_attempt_cannot_publish_result_or_free_hold(self):
@@ -184,7 +201,7 @@ class ResultTests(unittest.TestCase):
         self.now += timedelta(seconds=self.settings.content_retention_seconds)
         self.error(ErrorCode.CONTENT_EXPIRED, lambda: self.results.get(self.owner, admitted.status.job_id))
         self.requests.prune_expired()
-        with sqlite3.connect(self.path) as connection:
+        with closed_sqlite_connect(self.path) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM service_job_results").fetchone()[0], 0)
         self.assertEqual(self.store.get(self.owner, admitted.status.job_id).state, JobState.COMPLETED)
 
@@ -201,7 +218,7 @@ class ResultTests(unittest.TestCase):
 
     def test_schema_four_migration_preserves_existing_prompt_and_hold(self):
         admitted, _, permit = self.running()
-        with sqlite3.connect(self.path) as connection:
+        with closed_sqlite_connect(self.path) as connection:
             connection.execute("DROP TABLE service_preparation_sources")
             connection.execute("DROP TABLE service_preparations")
             connection.execute("DROP TABLE service_job_results")
@@ -209,7 +226,7 @@ class ResultTests(unittest.TestCase):
         reopened = JobStore(self.path, self.settings, clock=lambda: self.now)
         self.assertEqual(JobRequests(JobScheduler(reopened)).get(self.owner, admitted.status.job_id).prompt, "Question")
         self.assertEqual(InferenceGate(JobScheduler(reopened)).held_permits()[0].token, permit.token)
-        with sqlite3.connect(self.path) as connection:
+        with closed_sqlite_connect(self.path) as connection:
             self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
 
     def test_snapshot_and_stop_confirmation_are_validated(self):

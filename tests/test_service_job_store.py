@@ -6,6 +6,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from tests.sqlite_helpers import closed_sqlite_connect
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -139,11 +140,11 @@ class JobStoreTests(unittest.TestCase):
 
     def test_database_identity_and_future_versions_are_rejected(self):
         unrelated = Path(self.directory.name) / "unrelated.sqlite3"
-        with sqlite3.connect(unrelated) as connection:
+        with closed_sqlite_connect(unrelated) as connection:
             connection.execute("CREATE TABLE existing_data (value TEXT)")
         with self.assertRaises(UnsupportedJobSchemaError):
             JobStore(unrelated, self.settings)
-        with sqlite3.connect(self.path) as connection:
+        with closed_sqlite_connect(self.path) as connection:
             connection.execute("PRAGMA user_version = 999")
         with self.assertRaises(UnsupportedJobSchemaError):
             JobStore(self.path, self.settings)

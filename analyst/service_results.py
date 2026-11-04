@@ -34,6 +34,7 @@ from service_job_store import (
 )
 from service_scheduler import _identifier, _TOKEN
 from token_usage import TokenUsage
+from dfir_tools import ToolResult
 
 
 MAX_RESULT_BYTES = 4_000_000
@@ -123,6 +124,35 @@ class JobResults:
             raise ServiceError(ErrorCode.CONFLICT)
 
         return hashlib.sha256(permit.token.encode("ascii")).hexdigest()
+
+    def capture_tool(self, claim, result: ToolResult) -> JobStatus:
+        """Capture a completed deterministic tool result using a worker lease."""
+        if not isinstance(result, ToolResult):
+            raise ValueError("result must be a ToolResult.")
+        payload = ResultSnapshot(result.to_json()).serialize()
+        payload_digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        job_id = claim.status.job_id
+        with self.store._transaction(write=True) as connection:
+            now = self.store._now()
+            self.scheduler._checked(connection, claim, now)
+            self.store._require_request(connection, job_id, now)
+            status = self.scheduler._change(connection, job_id, JobState.RUNNING, now)
+            status = self.scheduler._change(
+                connection, job_id, JobState.FINALIZING, now,
+                inference_stopped=True,
+            )
+            connection.execute(
+                """
+                INSERT INTO service_job_results (
+                    job_id, worker_id, attempt, permit_digest,
+                    payload_json, payload_digest, captured_at, persistence_state
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+                """,
+                (job_id, claim.worker_id, claim.attempt, payload_digest,
+                 payload, payload_digest, _timestamp(now)),
+            )
+            connection.execute("DELETE FROM service_job_leases WHERE job_id = ?", (job_id,))
+            return status
 
     def capture(
         self,

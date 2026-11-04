@@ -33,7 +33,7 @@ from service_contracts import (
 from service_settings import ServiceSettings
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 APPLICATION_ID = 0x43524A31
 
 _OBJECT_ID = re.compile(r"[0-9a-f]{32}")
@@ -110,6 +110,7 @@ CREATE TABLE service_request_content (
     job_id TEXT PRIMARY KEY NOT NULL
         REFERENCES service_jobs(job_id) ON DELETE CASCADE,
     prompt TEXT NOT NULL CHECK (length(trim(prompt)) > 0),
+    tool_request_json TEXT,
     expires_at TEXT NOT NULL
 )
 """
@@ -379,7 +380,7 @@ class JobStore:
                     raise UnsupportedJobSchemaError(
                         "The database has an unsupported application identity."
                     )
-                if version not in (1, 2, 3, 4, 5, 6, SCHEMA_VERSION):
+                if version not in (1, 2, 3, 4, 5, 6, 7, SCHEMA_VERSION):
                     raise UnsupportedJobSchemaError(
                         "The database schema version is unsupported."
                     )
@@ -474,6 +475,16 @@ class JobStore:
                 if version == 6:
                     self._migrate_6_to_7(connection)
                     connection.execute("PRAGMA user_version = 7")
+                    version = 7
+
+                if version == 7:
+                    columns = {
+                        row["name"]
+                        for row in connection.execute("PRAGMA table_info(service_request_content)")
+                    }
+                    if "tool_request_json" not in columns:
+                        connection.execute("ALTER TABLE service_request_content ADD COLUMN tool_request_json TEXT")
+                    connection.execute("PRAGMA user_version = 8")
 
             connection.execute(
                 """
@@ -578,7 +589,7 @@ class JobStore:
         """Read unexpired content after the caller establishes authority."""
         row = connection.execute(
             """
-            SELECT job_id, prompt, expires_at
+            SELECT job_id, prompt, tool_request_json, expires_at
             FROM service_request_content
             WHERE job_id = ?
             """,
@@ -764,13 +775,14 @@ class JobStore:
                 connection.execute(
                     """
                     INSERT INTO service_request_content (
-                        job_id, prompt, expires_at
+                        job_id, prompt, tool_request_json, expires_at
                     )
-                    VALUES (?, ?, ?)
+                    VALUES (?, ?, ?, ?)
                     """,
                     (
                         job_id,
                         submission.prompt,
+                        None if submission.tool_request is None else submission.tool_request.to_json(),
                         _timestamp(content_expires),
                     ),
                 )

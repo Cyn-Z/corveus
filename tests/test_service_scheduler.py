@@ -6,6 +6,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from tests.sqlite_helpers import closed_sqlite_connect
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -165,7 +166,7 @@ class SchedulerTests(unittest.TestCase):
 
     def test_version_one_migration_preserves_existing_admission(self):
         legacy = Path(self.directory.name) / "legacy.sqlite3"
-        with sqlite3.connect(legacy) as connection:
+        with closed_sqlite_connect(legacy) as connection:
             connection.execute("""
                 CREATE TABLE service_jobs (
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -191,7 +192,7 @@ class SchedulerTests(unittest.TestCase):
         claim = JobScheduler(migrated).claim("worker-a")
         self.assertEqual(claim.status.job_id, "a" * 32)
         self.assertEqual(claim.attempt, 1)
-        with sqlite3.connect(legacy) as connection:
+        with closed_sqlite_connect(legacy) as connection:
             self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
             self.assertEqual(connection.execute("SELECT sequence FROM service_jobs").fetchone()[0], 9)
 

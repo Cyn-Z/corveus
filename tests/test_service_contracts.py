@@ -51,7 +51,26 @@ class JobContractTests(unittest.TestCase):
         )
         self.assertEqual(submission.prompt, prompt)
         self.assertIsNone(submission.conversation_id)
+        self.assertIsNone(submission.tool_request)
         self.assertNotIn(prompt, repr(submission))
+
+    def test_submission_accepts_only_validated_dfir_tool_request(self):
+        submission = JobSubmission.from_payload(
+            {
+                "prompt": "Analyze fixture",
+                "tool": {
+                    "tool_id": "sysmon_powershell_offline_v1",
+                    "input": {"fixture_id": "sysmon_powershell"},
+                },
+            },
+            idempotency_key="request-tool",
+        )
+        self.assertEqual(submission.tool_request.tool_id, "sysmon_powershell_offline_v1")
+        with self.assertRaises(ServiceError):
+            JobSubmission.from_payload(
+                {"prompt": "Analyze", "tool": {"tool_id": "arbitrary-shell", "input": {}}},
+                idempotency_key="request-bad-tool",
+            )
 
     def test_client_cannot_supply_owner_scope_or_execution_profile(self):
         for field in ("owner_id", "tenant_id", "scope", "execution_profile_id"):

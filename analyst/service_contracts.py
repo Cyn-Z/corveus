@@ -150,6 +150,7 @@ class JobSubmission:
     prompt: str = field(repr=False)
     idempotency_key: str = field(repr=False)
     conversation_id: str | None = None
+    tool_request: object | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.prompt, str) or not self.prompt.strip():
@@ -173,6 +174,10 @@ class JobSubmission:
 
         if self.conversation_id is not None:
             _object_id(self.conversation_id, "conversation_id")
+        if self.tool_request is not None:
+            from dfir_tools import ToolRequest
+            if not isinstance(self.tool_request, ToolRequest):
+                raise ValueError("tool_request must be a validated ToolRequest.")
 
     @classmethod
     def from_payload(
@@ -194,7 +199,7 @@ class JobSubmission:
         if type(payload) is not dict:
             raise ServiceError(ErrorCode.INVALID_REQUEST)
 
-        if "prompt" not in payload or set(payload) - {"prompt", "conversation_id"}:
+        if "prompt" not in payload or set(payload) - {"prompt", "conversation_id", "tool"}:
             raise ServiceError(ErrorCode.INVALID_REQUEST)
 
         prompt = payload["prompt"]
@@ -202,10 +207,15 @@ class JobSubmission:
             raise ServiceError(ErrorCode.INVALID_REQUEST)
 
         try:
+            tool_request = None
+            if "tool" in payload:
+                from dfir_tools import ToolRequest
+                tool_request = ToolRequest.from_payload(payload["tool"])
             return cls(
                 prompt=prompt,
                 idempotency_key=idempotency_key,
                 conversation_id=payload.get("conversation_id"),
+                tool_request=tool_request,
             )
         except ValueError:
             raise ServiceError(ErrorCode.INVALID_REQUEST) from None
@@ -216,6 +226,7 @@ class JobSubmission:
             {
                 "conversation_id": self.conversation_id,
                 "prompt": self.prompt,
+                "tool": None if self.tool_request is None else json.loads(self.tool_request.to_json()),
             },
             ensure_ascii=False,
             sort_keys=True,

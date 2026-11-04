@@ -6,6 +6,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from tests.sqlite_helpers import closed_sqlite_connect
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -215,7 +216,7 @@ class InferenceGateTests(unittest.TestCase):
 
     def test_version_two_migration_preserves_active_preparation_lease(self):
         legacy = Path(self.directory.name) / "legacy.sqlite3"
-        with sqlite3.connect(legacy) as connection:
+        with closed_sqlite_connect(legacy) as connection:
             connection.execute("""
                 CREATE TABLE service_jobs (
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -255,7 +256,7 @@ class InferenceGateTests(unittest.TestCase):
         claim = WorkerLease(migrated.get(self.owner, "a" * 32), "worker-legacy", 1,
                             "d" * 64, self.now + timedelta(seconds=30))
         self.assertEqual(scheduler.heartbeat(claim).attempt, 1)
-        with sqlite3.connect(legacy) as connection:
+        with closed_sqlite_connect(legacy) as connection:
             self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
             self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
 

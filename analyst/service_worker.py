@@ -21,6 +21,7 @@ from service_contracts import ErrorCode, JobState, JobStatus, ServiceError
 from service_preparation import JobPreparation
 from service_results import JobResults, ResultSnapshot
 from service_scheduler import WorkerLease, _identifier
+from dfir_tools import ToolRegistry
 
 
 class _LeaseRenewal:
@@ -81,6 +82,7 @@ class JobWorker:
         call_llm: Callable,
         reserved_bytes: int,
         poll_seconds: float = 1.0,
+        tool_registry: ToolRegistry | None = None,
     ) -> None:
         _identifier(worker_id, "worker_id")
         if not isinstance(preparation, JobPreparation):
@@ -106,7 +108,10 @@ class JobWorker:
         self.scheduler = preparation.scheduler
         self.store = preparation.store
         self.gate = results.gate
+        if tool_registry is not None and not isinstance(tool_registry, ToolRegistry):
+            raise ValueError("tool_registry must be a ToolRegistry or None.")
         self.call_llm = call_llm
+        self.tool_registry = tool_registry or ToolRegistry()
         self.reserved_bytes = reserved_bytes
         self.poll_seconds = poll_seconds
         self._active = Lock()
@@ -157,6 +162,12 @@ class JobWorker:
         captured = False
         try:
             with _LeaseRenewal(self.scheduler, claim) as renewal:
+                request = self.preparation.requests.for_worker(claim)
+                if request.tool_request is not None:
+                    result = self.tool_registry.execute(request.tool_request)
+                    waiting = self.scheduler.mark_waiting(claim)
+                    captured_status = self.results.capture_tool(waiting, result)
+                    return self.results.finalize(captured_status.principal, captured_status.job_id).status
                 status = self.preparation.prepare(claim)
                 if status.state is not JobState.WAITING_INFERENCE:
                     return status

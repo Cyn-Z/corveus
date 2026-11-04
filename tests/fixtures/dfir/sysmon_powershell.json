@@ -1,0 +1,47 @@
+{
+  "events": [
+    {
+      "event_id": 1,
+      "provider": "Microsoft-Windows-Sysmon",
+      "timestamp": "2026-01-01T12:00:00Z",
+      "host": "TEST-HOST",
+      "process_id": 1200,
+      "parent_process_id": 800,
+      "image": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      "command_line": "powershell.exe -NoProfile -EncodedCommand UwB0AGEAcgB0AC0AUAByAG8AYwBlAHMAcwA=",
+      "user": "TEST\\analyst"
+    },
+    {
+      "event_id": 3,
+      "provider": "Microsoft-Windows-Sysmon",
+      "timestamp": "2026-01-01T12:00:05Z",
+      "host": "TEST-HOST",
+      "process_id": 1200,
+      "source_ip": "10.0.0.5",
+      "source_port": 50123,
+      "destination_ip": "203.0.113.10",
+      "destination_port": 443,
+      "protocol": "tcp"
+    },
+    {
+      "event_id": 1,
+      "provider": "Microsoft-Windows-Sysmon",
+      "timestamp": "2026-01-01T11:59:50Z",
+      "host": "TEST-HOST",
+      "process_id": 800,
+      "parent_process_id": 700,
+      "image": "C:\\Windows\\explorer.exe",
+      "command_line": "explorer.exe"
+    },
+    {
+      "event_id": 1,
+      "provider": "Microsoft-Windows-Sysmon",
+      "timestamp": "2026-01-01T12:00:10Z",
+      "host": "TEST-HOST",
+      "process_id": 1300,
+      "parent_process_id": 9999,
+      "image": "C:\\Windows\\System32\\cmd.exe",
+      "command_line": "cmd.exe"
+    }
+  ]
+}

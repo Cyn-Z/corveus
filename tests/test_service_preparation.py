@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from tests.sqlite_helpers import closed_sqlite_connect
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -86,7 +87,7 @@ class PreparationTests(unittest.TestCase):
         status, old = self.review_job()
         self.assertEqual(status.state, JobState.AWAITING_REVIEW)
         self.error(ErrorCode.CONFLICT, lambda: self.scheduler.heartbeat(old))
-        with sqlite3.connect(self.path) as connection:
+        with closed_sqlite_connect(self.path) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM service_job_leases").fetchone()[0], 0)
         self.assertEqual(InferenceGate(self.scheduler).held_permits(), ())
 
@@ -199,7 +200,7 @@ class PreparationTests(unittest.TestCase):
     def test_preparation_write_failure_rolls_back_state_and_lease_revocation(self):
         self.submit()
         claim = self.scheduler.claim("worker-a")
-        with sqlite3.connect(self.path) as connection:
+        with closed_sqlite_connect(self.path) as connection:
             connection.execute("""
                 CREATE TRIGGER reject_preparation BEFORE INSERT ON service_preparations
                 BEGIN SELECT RAISE(ABORT, 'simulated failure'); END
@@ -219,7 +220,7 @@ class PreparationTests(unittest.TestCase):
         self.review_job()
         self.now += timedelta(seconds=self.settings.content_retention_seconds)
         self.requests.prune_expired()
-        with sqlite3.connect(self.path) as connection:
+        with closed_sqlite_connect(self.path) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM service_preparations").fetchone()[0], 0)
 
     def test_schema_five_migration_preserves_result_prompt_and_live_hold(self):
@@ -235,7 +236,7 @@ class PreparationTests(unittest.TestCase):
         claim = self.scheduler.claim("worker-b")
         self.preparation.prepare(claim)
         held = gate.start(claim, reserved_bytes=10)
-        with sqlite3.connect(self.path) as connection:
+        with closed_sqlite_connect(self.path) as connection:
             connection.execute("DROP TABLE service_preparation_sources")
             connection.execute("DROP TABLE service_preparations")
             connection.execute("PRAGMA user_version = 5")
@@ -244,20 +245,20 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(reopened_gate.held_permits()[0].token, held.token)
         self.assertEqual(JobRequests(reopened_gate.scheduler).get(self.owner, second.job_id).prompt, "Question")
         self.assertEqual(JobResults(reopened_gate).recover(), 1)
-        with sqlite3.connect(self.path) as connection:
+        with closed_sqlite_connect(self.path) as connection:
             self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
             self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
 
     def test_failed_schema_six_migration_rolls_back_all_existing_data(self):
         original = self.submit()
-        with sqlite3.connect(self.path) as connection:
+        with closed_sqlite_connect(self.path) as connection:
             connection.execute("DROP TABLE service_preparation_sources")
             connection.execute("DROP TABLE service_preparations")
             connection.execute("PRAGMA user_version = 5")
         with patch("service_job_store._PREPARATION_SCHEMA", "INVALID SQL"):
             with self.assertRaises(sqlite3.OperationalError):
                 JobStore(self.path, self.settings)
-        with sqlite3.connect(self.path) as connection:
+        with closed_sqlite_connect(self.path) as connection:
             self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 5)
             self.assertEqual(connection.execute("SELECT job_id FROM service_jobs").fetchone()[0], original.job_id)
             self.assertEqual(connection.execute("SELECT prompt FROM service_request_content").fetchone()[0], "Question")

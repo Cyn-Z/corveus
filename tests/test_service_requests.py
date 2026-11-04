@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from tests.sqlite_helpers import closed_sqlite_connect
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -82,19 +83,19 @@ class RequestStorageTests(unittest.TestCase):
                 lambda _: self.requests.submit(self.owner, self.submission()), range(16)
             ))
         self.assertEqual(sum(result.created for result in results), 1)
-        with sqlite3.connect(self.path) as connection:
+        with closed_sqlite_connect(self.path) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM service_jobs").fetchone()[0], 1)
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM service_request_content").fetchone()[0], 1)
 
     def test_content_insert_failure_rolls_back_job_admission(self):
-        with sqlite3.connect(self.path) as connection:
+        with closed_sqlite_connect(self.path) as connection:
             connection.execute("""
                 CREATE TRIGGER reject_content BEFORE INSERT ON service_request_content
                 BEGIN SELECT RAISE(ABORT, 'simulated storage failure'); END
             """)
         with self.assertRaises(sqlite3.IntegrityError):
             self.requests.submit(self.owner, self.submission())
-        with sqlite3.connect(self.path) as connection:
+        with closed_sqlite_connect(self.path) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM service_jobs").fetchone()[0], 0)
 
     def test_rejected_admission_leaves_no_orphan_content(self):
@@ -102,7 +103,7 @@ class RequestStorageTests(unittest.TestCase):
         requests = JobRequests(JobScheduler(JobStore(self.path, settings, clock=lambda: self.now)))
         requests.submit(self.owner, self.submission())
         self.error(ErrorCode.QUEUE_FULL, lambda: requests.submit(self.owner, self.submission("two")))
-        with sqlite3.connect(self.path) as connection:
+        with closed_sqlite_connect(self.path) as connection:
             self.assertEqual(connection.execute("SELECT COUNT(*) FROM service_request_content").fetchone()[0], 1)
 
     def test_expiry_never_releases_uncertain_inference_capacity(self):
@@ -137,7 +138,7 @@ class RequestStorageTests(unittest.TestCase):
         claim = self.scheduler.mark_waiting(self.scheduler.claim("worker-a"))
         gate = InferenceGate(self.scheduler)
         permit = gate.start(claim, reserved_bytes=10)
-        with sqlite3.connect(self.path) as connection:
+        with closed_sqlite_connect(self.path) as connection:
             connection.execute("DROP TABLE service_preparation_sources")
             connection.execute("DROP TABLE service_preparations")
             connection.execute("DROP TABLE service_job_results")
@@ -148,7 +149,7 @@ class RequestStorageTests(unittest.TestCase):
         self.assertEqual(len(reopened.held_permits()), 1)
         self.assertEqual(reopened.held_permits()[0].token, permit.token)
         self.assertEqual(migrated.get(self.owner, admitted.status.job_id).job_id, admitted.status.job_id)
-        with sqlite3.connect(self.path) as connection:
+        with closed_sqlite_connect(self.path) as connection:
             self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
 
     def test_metadata_only_retry_cannot_silently_recreate_missing_content(self):
@@ -165,7 +166,7 @@ class RequestStorageTests(unittest.TestCase):
             ))
 
     def test_failed_content_migration_rolls_back_schema_version(self):
-        with sqlite3.connect(self.path) as connection:
+        with closed_sqlite_connect(self.path) as connection:
             connection.execute("DROP TABLE service_preparation_sources")
             connection.execute("DROP TABLE service_preparations")
             connection.execute("DROP TABLE service_job_results")
@@ -174,7 +175,7 @@ class RequestStorageTests(unittest.TestCase):
         with patch("service_job_store._REQUEST_SCHEMA", "INVALID SQL"):
             with self.assertRaises(sqlite3.OperationalError):
                 JobStore(self.path, self.settings)
-        with sqlite3.connect(self.path) as connection:
+        with closed_sqlite_connect(self.path) as connection:
             self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 3)
 
 
